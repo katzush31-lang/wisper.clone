@@ -111,6 +111,9 @@ fn handle(code: u32, down: bool) -> bool {
     if s.capture_event(code, down) {
         return true;
     }
+    if s.paused.load(Ordering::SeqCst) {
+        return false;
+    }
     let outcome = {
         let mut engine = s.engine.lock();
         if down {

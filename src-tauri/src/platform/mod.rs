@@ -37,6 +37,8 @@ pub struct HookShared {
     pub mouse_enabled: AtomicBool,
     /// A Win-key combo was used; mask the Win key-up so the Start menu doesn't open.
     pub mask_win: AtomicBool,
+    /// Shortcuts switched off from the tray menu.
+    pub paused: AtomicBool,
 }
 
 impl HookShared {
@@ -49,6 +51,7 @@ impl HookShared {
             capture_down: Mutex::new(Vec::new()),
             mouse_enabled: AtomicBool::new(false),
             mask_win: AtomicBool::new(false),
+            paused: AtomicBool::new(false),
         })
     }
 
