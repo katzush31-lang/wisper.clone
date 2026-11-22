@@ -158,28 +158,57 @@ pub fn parse_message(body: &str) -> Result<TextResponse, ProviderError> {
     })
 }
 
+impl Anthropic {
+    async fn send(&self, body: &Value) -> Result<TextResponse, ProviderError> {
+        let resp = self
+            .client
+            .post(format!("{}/messages", self.base))
+            .header("x-api-key", &self.key)
+            .header("anthropic-version", VERSION)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| from_reqwest(NAME, e))?;
+        let status = resp.status().as_u16();
+        let headers = resp.headers().clone();
+        let text = resp.text().await.map_err(|e| from_reqwest(NAME, e))?;
+        if status != 200 {
+            return Err(parse_error(status, &text, &headers));
+        }
+        parse_message(&text)
+    }
+}
+
+pub fn mentions_speed_settings(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    m.contains("thinking") || m.contains("output_config") || m.contains("effort")
+}
+
+pub fn plain_body(full: &Value) -> Value {
+    let mut b = full.clone();
+    if let Some(o) = b.as_object_mut() {
+        o.remove("thinking");
+        o.remove("output_config");
+    }
+    b
+}
+
 #[async_trait]
 impl TextModel for Anthropic {
     async fn complete(&self, req: TextRequest) -> Result<TextResponse, ProviderError> {
         if self.key.is_empty() {
             return Err(ProviderError::new(ErrorKind::Auth, NAME, "no Claude API key set"));
         }
-        let resp = self
-            .client
-            .post(format!("{}/messages", self.base))
-            .header("x-api-key", &self.key)
-            .header("anthropic-version", VERSION)
-            .json(&messages_body(&req))
-            .send()
-            .await
-            .map_err(|e| from_reqwest(NAME, e))?;
-        let status = resp.status().as_u16();
-        let headers = resp.headers().clone();
-        let body = resp.text().await.map_err(|e| from_reqwest(NAME, e))?;
-        if status != 200 {
-            return Err(parse_error(status, &body, &headers));
+        let full = messages_body(&req);
+        match self.send(&full).await {
+            // If the speed settings are ever rejected (e.g. a model that doesn't accept them),
+            // fall back to a plain request rather than failing the dictation.
+            Err(e) if e.kind == ErrorKind::BadRequest && mentions_speed_settings(&e.message) => {
+                tracing::warn!("Claude rejected speed settings, retrying plain: {}", e.message);
+                self.send(&plain_body(&full)).await
+            }
+            other => other,
         }
-        parse_message(&body)
     }
 
     fn provider_name(&self) -> &'static str {
@@ -216,6 +245,16 @@ mod tests {
         assert_eq!(b["output_config"]["effort"], "low");
         let b = messages_body(&req("claude-haiku-4-5"));
         assert!(b.get("thinking").is_none() && b.get("output_config").is_none());
+    }
+
+    #[test]
+    fn plain_fallback_drops_only_speed_settings() {
+        let full = messages_body(&req("claude-sonnet-5-5"));
+        let plain = plain_body(&full);
+        assert!(plain.get("thinking").is_none() && plain.get("output_config").is_none());
+        assert_eq!(plain["system"], full["system"]);
+        assert!(mentions_speed_settings("thinking.type: Input should be 'enabled'"));
+        assert!(!mentions_speed_settings("model: not found"));
     }
 
     #[test]

@@ -131,7 +131,40 @@ impl Transcriber for OpenAi {
         if self.key.is_empty() {
             return Err(ProviderError::new(ErrorKind::Auth, NAME, "no OpenAI API key set"));
         }
-        let form = transcription_form(&req)?;
+        match self.send_transcription(&req).await {
+            // If the hints are ever rejected (too many keywords, prompt too long, unsupported
+            // language code), transcribe without them rather than failing.
+            Err(e) if e.kind == ErrorKind::BadRequest && (!req.keywords.is_empty() || req.prompt.is_some() || !req.languages.is_empty()) => {
+                tracing::warn!("transcription hints rejected, retrying without them: {}", e.message);
+                let bare = TranscribeRequest { prompt: None, keywords: vec![], languages: vec![], ..req };
+                self.send_transcription(&bare).await
+            }
+            other => other,
+        }
+    }
+}
+
+impl OpenAi {
+    async fn send_responses(&self, body: &Value) -> Result<TextResponse, ProviderError> {
+        let resp = self
+            .client
+            .post(format!("{}/responses", self.base))
+            .bearer_auth(&self.key)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| from_reqwest(NAME, e))?;
+        let status = resp.status().as_u16();
+        let headers = resp.headers().clone();
+        let text = resp.text().await.map_err(|e| from_reqwest(NAME, e))?;
+        if status != 200 {
+            return Err(parse_error(status, &text, &headers));
+        }
+        parse_responses(&text)
+    }
+
+    async fn send_transcription(&self, req: &TranscribeRequest) -> Result<Transcript, ProviderError> {
+        let form = transcription_form(req)?;
         let resp = self
             .client
             .post(format!("{}/audio/transcriptions", self.base))
@@ -220,21 +253,17 @@ impl TextModel for OpenAi {
         if self.key.is_empty() {
             return Err(ProviderError::new(ErrorKind::Auth, NAME, "no OpenAI API key set"));
         }
-        let resp = self
-            .client
-            .post(format!("{}/responses", self.base))
-            .bearer_auth(&self.key)
-            .json(&responses_body(&req))
-            .send()
-            .await
-            .map_err(|e| from_reqwest(NAME, e))?;
-        let status = resp.status().as_u16();
-        let headers = resp.headers().clone();
-        let body = resp.text().await.map_err(|e| from_reqwest(NAME, e))?;
-        if status != 200 {
-            return Err(parse_error(status, &body, &headers));
+        let body = responses_body(&req);
+        match self.send_responses(&body).await {
+            Err(e) if e.kind == ErrorKind::BadRequest && e.message.to_lowercase().contains("reasoning") => {
+                let mut plain = body.clone();
+                if let Some(o) = plain.as_object_mut() {
+                    o.remove("reasoning");
+                }
+                self.send_responses(&plain).await
+            }
+            other => other,
         }
-        parse_responses(&body)
     }
 
     fn provider_name(&self) -> &'static str {
