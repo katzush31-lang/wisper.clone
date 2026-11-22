@@ -281,6 +281,12 @@ impl Controller {
             hands_free_flag,
             kind_flag,
         });
+        {
+            let mut e = self.hook.engine.lock();
+            if !e.is_recording() {
+                e.start_external(kind, now_ms());
+            }
+        }
         let mut st = self.bar("listening");
         st.hands_free = hands_free;
         st.kind = if kind == RecordingKind::Command { "command" } else { "dictation" };

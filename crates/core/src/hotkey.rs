@@ -369,6 +369,14 @@ impl GestureEngine {
         }
     }
 
+    /// A recording was started outside the keyboard (bar button, Scratchpad): treat it as
+    /// hands-free so the dictation shortcut finishes it and Esc cancels it.
+    pub fn start_external(&mut self, kind: RecordingKind, now: u64) {
+        self.state = State::HandsFree { kind, releasing: false };
+        self.started_at = now;
+        self.cancel_enabled = true;
+    }
+
     /// Called when the recording ends for reasons outside the engine (bar ✕/✓ clicked, error).
     pub fn reset_recording(&mut self) {
         if self.is_recording() {
@@ -820,6 +828,18 @@ mod tests {
         let out = e.key_down(0x31, 5);
         assert!(out.swallow);
         assert!(out.actions.contains(&Action::OneShot(OneShot::Transform(0))));
+    }
+
+    #[test]
+    fn externally_started_recording_stops_with_hotkey_or_esc() {
+        let mut e = engine();
+        e.start_external(RecordingKind::Dictation, 0);
+        assert!(e.is_recording());
+        let a = without_suppress(press(&mut e, &[CTRL, WIN], 5000));
+        assert_eq!(a, vec![Action::Finish]);
+        release(&mut e, &[WIN, CTRL], 5100);
+        e.start_external(RecordingKind::Dictation, 6000);
+        assert_eq!(e.key_down(ESC, 7000).actions, vec![Action::Cancel(CancelReason::User)]);
     }
 
     #[test]
