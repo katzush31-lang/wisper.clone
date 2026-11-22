@@ -125,8 +125,8 @@ export default function ScratchpadPage() {
       }, 0);
       void flush();
     });
-    // A dictation that ended without text (cancelled, failed, nothing heard) also ends "Listening".
-    const un2 = events.historyChanged(() => setDictating(false));
+    // The backend says when a Scratchpad recording starts and stops (also via shortcut or Esc).
+    const un2 = events.dictationState(setDictating);
     return () => {
       un.then((f) => f()).catch(() => {});
       un2.then((f) => f()).catch(() => {});
@@ -137,7 +137,6 @@ export default function ScratchpadPage() {
   // The same button starts and stops (the shortcut and Esc work too).
   const dictate = async () => {
     try {
-      setDictating((d) => !d);
       await api.dictateIntoScratchpad();
     } catch (e) {
       setDictating(false);

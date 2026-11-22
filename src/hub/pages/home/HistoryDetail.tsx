@@ -64,7 +64,9 @@ export default function HistoryDetail({
   }
 
   const status = statusInfo(item);
-  const canRetry = item.status === "failed" || item.status === "queued" || item.status === "cancelled";
+  // "empty" = judged silent; retrying transcribes it anyway (useful for very quiet speech).
+  const canRetry =
+    item.status === "failed" || item.status === "queued" || item.status === "cancelled" || (item.status === "empty" && !!item.audioPath);
   const when = new Date(item.createdAt).toLocaleString("en-GB", {
     weekday: "long",
     day: "numeric",

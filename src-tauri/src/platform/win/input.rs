@@ -329,7 +329,8 @@ pub fn insert_text(text: &str, exe: &str) -> InsertOutcome {
 /// restoring the user's clipboard afterwards.
 pub fn copy_selection_via_clipboard() -> Option<String> {
     wait_for_modifiers_released(2500);
-    let snapshot = snapshot_clipboard();
+    // If the clipboard can't be saved first, don't touch it at all.
+    let snapshot = snapshot_clipboard()?;
     let before = unsafe { GetClipboardSequenceNumber() };
     if !send_copy() {
         return None;
@@ -348,9 +349,7 @@ pub fn copy_selection_via_clipboard() -> Option<String> {
     }
     // Only put the old clipboard back if our Ctrl+C actually replaced it.
     if changed {
-        if let Some(s) = snapshot {
-            restore_snapshot(&s);
-        }
+        restore_snapshot(&snapshot);
     }
     text.filter(|t| !t.trim().is_empty())
 }

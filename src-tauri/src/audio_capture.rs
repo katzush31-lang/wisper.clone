@@ -49,6 +49,9 @@ pub struct Capture {
     cmd: Sender<Cmd>,
     shared: Arc<Shared>,
     format: Arc<Mutex<Option<Format>>>,
+    /// Identifies who is currently receiving audio, so a stale stop can't cut off a newer
+    /// recording.
+    session: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Capture {
@@ -66,12 +69,13 @@ impl Capture {
             .name("wisper-audio".into())
             .spawn(move || audio_thread(rx, s2))
             .expect("spawn audio thread");
-        Capture { cmd: tx, shared, format: Arc::new(Mutex::new(None)) }
+        Capture { cmd: tx, shared, format: Arc::new(Mutex::new(None)), session: Arc::new(std::sync::atomic::AtomicU64::new(0)) }
     }
 
     /// Opens the microphone (if not already open) and starts sending chunks to `sink`.
-    /// Returns the stream format and any pre-roll audio captured before this call.
-    pub fn start(&self, device: Option<String>, warm: bool, sink: Sink) -> Result<(Format, Chunk), String> {
+    /// Returns the stream format, any pre-roll audio captured before this call, and a
+    /// session id for `stop`.
+    pub fn start(&self, device: Option<String>, warm: bool, sink: Sink) -> Result<(Format, Chunk, u64), String> {
         let (rtx, rrx) = channel();
         self.cmd.send(Cmd::Open { device, warm, reply: rtx }).map_err(|e| e.to_string())?;
         let format = rrx
@@ -80,13 +84,22 @@ impl Capture {
         *self.format.lock() = Some(format);
         let pre: Chunk = self.shared.preroll.lock().drain(..).collect();
         *self.shared.error.lock() = None;
-        *self.shared.sink.lock() = Some(sink);
-        Ok((format, pre))
+        let mut guard = self.shared.sink.lock();
+        *guard = Some(sink);
+        let id = self.session.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        drop(guard);
+        Ok((format, pre, id))
     }
 
-    /// Stops delivering audio. The stream stays open if "keep microphone ready" is on.
-    pub fn stop(&self) {
-        *self.shared.sink.lock() = None;
+    /// Stops delivering audio to session `id` (ignored if a newer session has started).
+    /// The stream stays open if "keep microphone ready" is on.
+    pub fn stop(&self, id: u64) {
+        let mut guard = self.shared.sink.lock();
+        if self.session.load(std::sync::atomic::Ordering::SeqCst) != id {
+            return;
+        }
+        *guard = None;
+        drop(guard);
         let _ = self.cmd.send(Cmd::Close { force: false });
     }
 

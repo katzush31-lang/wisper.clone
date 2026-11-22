@@ -11,12 +11,17 @@ use crate::providers::{ErrorKind, ProviderError, TextResponse, Transcript};
 struct FakeStt {
     script: Mutex<VecDeque<Result<String, ProviderError>>>,
     requests: Mutex<Vec<TranscribeRequest>>,
+    delay_ms: std::sync::atomic::AtomicU64,
 }
 
 #[async_trait]
 impl Transcriber for FakeStt {
     async fn transcribe(&self, req: TranscribeRequest) -> Result<Transcript, ProviderError> {
         self.requests.lock().unwrap().push(req);
+        let d = self.delay_ms.load(std::sync::atomic::Ordering::SeqCst);
+        if d > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(d)).await;
+        }
         let next = self.script.lock().unwrap().pop_front();
         match next {
             Some(Ok(t)) => Ok(Transcript { text: t, languages: vec![] }),
@@ -403,6 +408,42 @@ async fn retention_removes_old_audio_only() {
     let item = h.engine.db.get(&id).unwrap().unwrap();
     assert!(item.audio_path.is_none());
     assert!(item.final_text.is_some());
+}
+
+#[test]
+fn cleanup_guard_accepts_normal_formatting() {
+    // Email layout adds line breaks and keeps the spoken greeting/sign-off.
+    assert!(looks_like_cleanup(
+        "hi david thanks for sending the documents I'll review them tonight best asher",
+        "Hi David,\n\nThanks for sending the documents. I'll review them tonight.\n\nBest,\nAsher"
+    ));
+    // AI Prompt mode may add a short heading and bullets.
+    assert!(looks_like_cleanup(
+        "write a python function that reads a csv file skips the header converts dates to iso and returns a list of dicts with type hints",
+        "Write a Python function that:\n\nRequirements:\n- Reads a CSV file\n- Skips the header\n- Converts dates to ISO format\n- Returns a list of dictionaries\n- Uses type hints"
+    ));
+    // Heavy filler removal.
+    assert!(looks_like_cleanup(
+        "um so like you know I I think um we should uh maybe like go tomorrow you know",
+        "I think we should maybe go tomorrow."
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn abandoned_job_releases_its_claim_so_the_queue_can_finish_it() {
+    let h = harness();
+    h.stt.delay_ms.store(3000, std::sync::atomic::Ordering::SeqCst);
+    let rec = record(&h, ctx("notepad.exe", ""), &[(true, 1500)]);
+    let id = rec.id.clone();
+    assert!(h.engine.is_active(&id));
+    // The caller gives up waiting (the controller's time limit).
+    let r = tokio::time::timeout(std::time::Duration::from_millis(200), h.engine.process(rec, &no_progress())).await;
+    assert!(r.is_err());
+    assert!(!h.engine.is_active(&id), "claim must be released when the job is dropped");
+    // The saved dictation is picked up by the queue later.
+    h.stt.delay_ms.store(0, std::sync::atomic::Ordering::SeqCst);
+    let results = h.engine.process_queue().await;
+    assert!(results.iter().any(|(rid, r)| rid == &id && matches!(r, Ok(Outcome::Text(_)))), "{results:?}");
 }
 
 #[test]

@@ -521,14 +521,7 @@ pub fn delete_note(app: AppHandle, id: i64) -> Res<()> {
 #[tauri::command]
 pub fn dictate_into_scratchpad(app: AppHandle) {
     let c = ctl(&app);
-    std::thread::spawn(move || {
-        if c.hook.engine.lock().is_recording() {
-            c.hook.engine.lock().reset_recording();
-            c.finish();
-        } else {
-            c.begin(wisper_core::hotkey::RecordingKind::Dictation, true, Target::Scratchpad);
-        }
-    });
+    std::thread::spawn(move || c.scratchpad_toggle());
 }
 
 #[tauri::command]

@@ -49,6 +49,8 @@ struct DuckSlot {
 
 struct Recording {
     tx: Sender<RecMsg>,
+    /// Microphone session for this recording.
+    capture_id: u64,
     /// The window that had focus when recording started (where the text should go).
     hwnd: isize,
     kind: RecordingKind,
@@ -94,6 +96,8 @@ pub struct Controller {
     last: Mutex<Option<LastResult>>,
     bar_generation: AtomicU64,
     last_bar: Mutex<Option<BarState>>,
+    /// The latest "processing" view, so a brief message can hand the bar back to it.
+    last_progress: Mutex<Option<BarState>>,
     single_tap_hints: AtomicU64,
     dictations_since_suggest: AtomicU64,
     next_token: AtomicU64,
@@ -119,6 +123,7 @@ impl Controller {
             last: Mutex::new(None),
             bar_generation: AtomicU64::new(0),
             last_bar: Mutex::new(None),
+            last_progress: Mutex::new(None),
             single_tap_hints: AtomicU64::new(0),
             dictations_since_suggest: AtomicU64::new(0),
             next_token: AtomicU64::new(1),
@@ -154,7 +159,15 @@ impl Controller {
             std::thread::spawn(move || {
                 std::thread::sleep(d);
                 if me.bar_generation.load(Ordering::SeqCst) == gen {
-                    me.rest_bar();
+                    let processing = matches!(*me.phase.lock(), Phase::Processing { .. });
+                    match (processing, me.last_progress.lock().clone()) {
+                        // A brief message shown mid-processing hands the bar back to progress.
+                        (true, Some(p)) => {
+                            me.bar_generation.fetch_add(1, Ordering::SeqCst);
+                            bar::emit(&me.app, &p);
+                        }
+                        _ => me.rest_bar(),
+                    }
                 }
             });
         }
@@ -251,7 +264,7 @@ impl Controller {
         let sink = Box::new(move |chunk: Chunk| {
             let _ = audio_tx.send(RecMsg::Audio(chunk));
         });
-        let (format, preroll) = match self.capture.start(settings.microphone.clone(), settings.keep_mic_warm, sink) {
+        let (format, preroll, capture_id) = match self.capture.start(settings.microphone.clone(), settings.keep_mic_warm, sink) {
             Ok(v) => v,
             Err(e) => {
                 self.hook.engine.lock().reset_recording();
@@ -263,7 +276,7 @@ impl Controller {
         let session = match self.engine.start_session(kind, ctx, format.rate, format.channels, tauri::async_runtime::handle().inner().clone()) {
             Ok(s) => s,
             Err(e) => {
-                self.capture.stop();
+                self.capture.stop(capture_id);
                 self.hook.engine.lock().reset_recording();
                 self.show_bar(
                     self.bar("error").msg("Couldn't start recording").detail(format!("Wisper couldn't save audio to disk: {e}")),
@@ -324,6 +337,7 @@ impl Controller {
         }
         *self.phase.lock() = Phase::Recording(Recording {
             tx,
+            capture_id,
             hwnd,
             kind,
             hands_free,
@@ -344,6 +358,26 @@ impl Controller {
         st.hands_free = hands_free;
         st.kind = if kind == RecordingKind::Command { "command" } else { "dictation" };
         self.show_bar(st, None);
+        if target == Target::Scratchpad {
+            let _ = self.app.emit_to("main", "dictation-state", true);
+        }
+    }
+
+    /// The Scratchpad's Dictate button: starts a Scratchpad dictation, or finishes one that's
+    /// running. It never finishes a dictation aimed at another app.
+    pub fn scratchpad_toggle(self: &Arc<Self>) {
+        let running_target = match &*self.phase.lock() {
+            Phase::Recording(r) => Some(r.target),
+            _ => None,
+        };
+        match running_target {
+            Some(Target::Scratchpad) => {
+                self.hook.engine.lock().reset_recording();
+                self.finish();
+            }
+            Some(Target::App) => {}
+            None => self.begin(RecordingKind::Dictation, true, Target::Scratchpad),
+        }
     }
 
     /// Runs on its own thread: feeds audio to the session and drives the bar's meter.
@@ -421,18 +455,21 @@ impl Controller {
         let Some((rec, cancelled, token)) = rec else { return };
         self.hook.engine.lock().set_processing(true);
         let settings = self.settings();
-        if settings.sounds.enabled {
-            platform::play_sound(Sound::Stop, settings.sounds.volume);
-        }
         let mut st = self.bar("processing").msg("Transcribing…");
         st.kind = if rec.kind == RecordingKind::Command { "command" } else { "dictation" };
+        *self.last_progress.lock() = Some(st.clone());
         self.show_bar(st, None);
+        let _ = self.app.emit_to("main", "dictation-state", false);
         let me = self.clone();
         std::thread::spawn(move || {
             // Keep listening a moment so the end of the last word is captured, then stop the
             // microphone; everything captured is queued before the Finish message.
             std::thread::sleep(TAIL);
-            me.capture.stop();
+            me.capture.stop(rec.capture_id);
+            // Play the stop sound only once the microphone is off, so it isn't recorded.
+            if settings.sounds.enabled {
+                platform::play_sound(Sound::Stop, settings.sounds.volume);
+            }
             me.restore_audio(&rec);
             let (reply_tx, reply_rx) = channel();
             let _ = rec.tx.send(RecMsg::Finish(reply_tx));
@@ -490,7 +527,12 @@ impl Controller {
         let limit = Duration::from_secs(45 + rec.duration_ms / 20_000).min(Duration::from_secs(300));
         tauri::async_runtime::spawn(async move {
             let progress_me = me.clone();
+            let progress_cancelled = cancelled.clone();
             let progress = move |stage: Stage| {
+                // A cancelled job keeps working in the background but no longer owns the bar.
+                if progress_cancelled.load(Ordering::SeqCst) {
+                    return;
+                }
                 let msg = match stage {
                     Stage::Transcribing { done, total } if total > 2 => format!("Transcribing… {}/{}", done + 1, total),
                     Stage::Transcribing { .. } => "Transcribing…".to_string(),
@@ -504,6 +546,7 @@ impl Controller {
                 };
                 let mut st = progress_me.bar("processing").msg(msg);
                 st.kind = if kind == RecordingKind::Command { "command" } else { "dictation" };
+                *progress_me.last_progress.lock() = Some(st.clone());
                 let _ = progress_me.app.emit_to(bar::LABEL, "bar-state", &st);
             };
             let result = tokio::time::timeout(limit, me.engine.process(rec, &progress)).await;
@@ -517,7 +560,7 @@ impl Controller {
                         let st = me2
                             .bar("notice")
                             .msg("Taking longer than usual")
-                            .detail("Your dictation is saved and will finish in the background. You'll get a notification and find it in History.")
+                            .detail("Your dictation is saved and will finish in the background. You'll find it in History when it's done.")
                             .actions(&["history"]);
                         me2.show_bar(st, Some(Duration::from_secs(8)));
                     }
@@ -538,7 +581,7 @@ impl Controller {
             // Paste first, then free Wisper, so a new dictation can't start mid-paste.
             Ok(Outcome::Text(p)) => self.insert_result(p, target, &app, hwnd, kind),
             Ok(Outcome::NoSpeech { .. }) => {
-                let mut st = self.bar("notice").msg("Didn't catch anything").detail("No speech was detected. If you did speak, open it in History and choose Retry.");
+                let mut st = self.bar("notice").msg("Didn't catch anything").detail("No speech was detected. If you did speak, open it in History and choose Try again.");
                 st.actions = vec!["history"];
                 self.show_bar(st, Some(Duration::from_secs(4)));
             }
@@ -673,7 +716,8 @@ impl Controller {
             Phase::Recording(r) => {
                 drop(phase);
                 let _ = r.tx.send(RecMsg::Cancel);
-                self.capture.stop();
+                self.capture.stop(r.capture_id);
+                let _ = self.app.emit_to("main", "dictation-state", false);
                 self.restore_audio(&r);
                 self.hook.engine.lock().reset_recording();
                 BUSY.store(false, Ordering::SeqCst);

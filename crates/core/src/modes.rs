@@ -163,12 +163,16 @@ pub fn detect_spoken_switch(text: &str, modes: &[Mode]) -> Option<(String, Strin
     let as_form = format!(
         r"(?is){lead}(?:as|format (?:it|this) as|write (?:it|this) as|make (?:it|this))\s+(?:an?\s+|the\s+)?({alternatives})(?:\s+(?:mode|format|style))?\s*[,.:;!\-\u{{2014}}](?P<rest>.*)$"
     );
-    // "Email mode: …" / "In list mode, …" / "Use casual style …" — the word mode/format/style
-    // makes it unambiguous.
-    let mode_form = format!(
-        r"(?is){lead}(?:(?:in|use|using)\s+)?(?:an?\s+|the\s+)?({alternatives})\s+(?:mode|format|style)\b[,.:;!\-\u{{2014}}]?(?P<rest>.*)$"
+    // "In list mode, …" / "Use casual style …": the lead-in word makes it unambiguous.
+    let lead_in_form = format!(
+        r"(?is){lead}(?:in|use|using)\s+(?:an?\s+|the\s+)?({alternatives})\s+(?:mode|format|style)\b[,.:;!\-\u{{2014}}]?(?P<rest>.*)$"
     );
-    for pat in [as_form, mode_form] {
+    // "Email mode: …" / "List mode. …": without a lead-in word, punctuation must follow, so
+    // "Formal style is preferred in court" stays a sentence.
+    let bare_form = format!(
+        r"(?is){lead}(?:an?\s+|the\s+)?({alternatives})\s+(?:mode|format|style)\s*[,.:;!\-\u{{2014}}](?P<rest>.*)$"
+    );
+    for pat in [as_form, lead_in_form, bare_form] {
         let Ok(re) = Regex::new(&pat) else { continue };
         let Some(caps) = re.captures(text) else { continue };
         let spoken = caps.get(1)?.as_str().to_lowercase();
@@ -247,6 +251,10 @@ mod tests {
             "Use mail merge for this.",
             "Using text messages is fine.",
             "As a prompt engineer I think this works",
+            "Formal style is preferred in court.",
+            "Email format is weird today",
+            "Message mode is broken",
+            "List mode would be nice to have",
             "Make it a list of everything we need",
         ] {
             assert_eq!(detect_spoken_switch(s, &m), None, "{s}");

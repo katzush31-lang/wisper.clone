@@ -353,6 +353,8 @@ export const events = {
   hotkeyCaptured: (cb: (r: { keys: number[]; label: string; done: boolean }) => void) =>
     listen<{ keys: number[]; label: string; done: boolean }>("hotkey-captured", (e) => cb(e.payload)),
   navigate: (cb: (page: string) => void) => listen<string>("navigate", (e) => cb(e.payload)),
+  /** true while a Scratchpad dictation is recording */
+  dictationState: (cb: (recording: boolean) => void) => listen<boolean>("dictation-state", (e) => cb(e.payload)),
   /** a dictation targeted the Scratchpad; payload is the text to insert */
   scratchpadText: (cb: (text: string) => void) => listen<string>("scratchpad-text", (e) => cb(e.payload)),
 };
