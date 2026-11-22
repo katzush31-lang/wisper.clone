@@ -303,6 +303,8 @@ pub struct Outcome {
 
 pub struct GestureEngine {
     config: HotkeyConfig,
+    /// Extra one-shot bindings (e.g. transforms).
+    extra: Vec<(OneShot, KeyCombo)>,
     timing: Timing,
     pressed: Vec<u32>,
     state: State,
@@ -327,6 +329,7 @@ impl GestureEngine {
     pub fn new(config: HotkeyConfig, timing: Timing) -> Self {
         Self {
             config,
+            extra: Vec::new(),
             timing,
             pressed: Vec::new(),
             state: State::Idle,
@@ -339,6 +342,11 @@ impl GestureEngine {
 
     pub fn set_config(&mut self, config: HotkeyConfig) {
         self.config = config;
+        self.active = None;
+    }
+
+    pub fn set_extra(&mut self, extra: Vec<(OneShot, KeyCombo)>) {
+        self.extra = extra;
         self.active = None;
     }
 
@@ -514,6 +522,11 @@ impl GestureEngine {
         for (s, combos) in shots {
             if combos.iter().any(|c| !c.is_empty() && *c == current) {
                 return Some((Binding::OneShot(s), current));
+            }
+        }
+        for (s, combo) in &self.extra {
+            if !combo.is_empty() && *combo == current {
+                return Some((Binding::OneShot(*s), current));
             }
         }
         None
@@ -797,6 +810,16 @@ mod tests {
         assert!(out.swallow);
         assert_eq!(out.actions, vec![Action::OneShot(OneShot::PasteLast)]);
         assert!(e.key_up(0x5A, 50).swallow);
+    }
+
+    #[test]
+    fn extra_one_shots_for_transforms() {
+        let mut e = engine();
+        e.set_extra(vec![(OneShot::Transform(0), KeyCombo::new(&[WIN, ALT, 0x31]))]);
+        press(&mut e, &[WIN, ALT], 0);
+        let out = e.key_down(0x31, 5);
+        assert!(out.swallow);
+        assert!(out.actions.contains(&Action::OneShot(OneShot::Transform(0))));
     }
 
     #[test]

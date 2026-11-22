@@ -1,0 +1,201 @@
+.ins-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+.ins-tile {
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ins-tile-body {
+  min-height: 62px;
+  display: flex;
+  align-items: flex-end;
+}
+.ins-big {
+  font-size: 44px;
+  line-height: 1.05;
+}
+.ins-note {
+  font-size: 13px;
+}
+.ins-foot {
+  margin: 10px 2px 22px;
+  font-size: 13px;
+}
+.ins-section {
+  padding: 20px 22px;
+  margin-bottom: 14px;
+}
+.gauge-wrap {
+  position: relative;
+  width: 130px;
+  height: 74px;
+}
+.gauge {
+  width: 130px;
+  height: 74px;
+}
+.gauge-track,
+.gauge-fill {
+  fill: none;
+  stroke-width: 10;
+  stroke-linecap: round;
+}
+.gauge-track {
+  stroke: var(--card-strong);
+}
+.gauge-fill {
+  stroke: var(--accent);
+  transition: stroke-dasharray 0.4s ease;
+}
+.gauge-num {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  text-align: center;
+  font-size: 32px;
+}
+.trend {
+  width: 100%;
+  height: auto;
+  margin-top: 12px;
+}
+.trend-axis {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+.trend-bar {
+  fill: var(--accent-mid);
+}
+.trend-bar.now {
+  fill: var(--accent);
+}
+.trend-label {
+  font-size: 11px;
+  fill: var(--text-faint);
+}
+.ins-streak-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.ins-streak {
+  font-size: 32px;
+}
+.heat-legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+.heat {
+  display: flex;
+  gap: 8px;
+}
+.heat-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.heat-month-spacer {
+  height: 16px;
+}
+.heat-row-label {
+  height: 12px;
+  line-height: 12px;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+.heat-grid {
+  flex: 1;
+  min-width: 0;
+}
+.heat-months {
+  display: grid;
+  height: 16px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.heat-months span {
+  white-space: nowrap;
+}
+.heat-cols {
+  display: grid;
+  gap: 3px;
+}
+.heat-col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.heat-cell {
+  width: 100%;
+  min-width: 10px;
+  height: 12px;
+  border-radius: 3px;
+  background: var(--card-strong);
+}
+.heat-legend .heat-cell {
+  width: 12px;
+  min-width: 12px;
+}
+.heat-cell.empty {
+  background: transparent;
+}
+.heat-cell.band-0 {
+  background: var(--card-strong);
+}
+.heat-cell.band-1 {
+  background: color-mix(in srgb, var(--accent) 25%, var(--card-strong));
+}
+.heat-cell.band-2 {
+  background: color-mix(in srgb, var(--accent) 50%, var(--card-strong));
+}
+.heat-cell.band-3 {
+  background: color-mix(in srgb, var(--accent) 75%, var(--card-strong));
+}
+.heat-cell.band-4 {
+  background: var(--accent);
+}
+.apps {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.apps li {
+  display: grid;
+  grid-template-columns: 140px 1fr 110px;
+  align-items: center;
+  gap: 14px;
+}
+.app-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.app-bar-wrap {
+  height: 10px;
+  background: var(--card-strong);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.app-bar {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 5px;
+}
+.app-words {
+  text-align: right;
+  font-size: 13px;
+}
