@@ -13,6 +13,7 @@ pub mod prompts;
 pub mod providers;
 pub mod settings;
 pub mod snippets;
+pub mod sounds;
 pub mod text;
 
 pub fn version() -> &'static str {
