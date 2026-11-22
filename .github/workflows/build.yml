@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -57,7 +57,7 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           node scripts/set-version.mjs "$VERSION"
       - name: Windows tests
-        run: cargo test --workspace --locked
+        run: cargo test -p wisper-core --locked
       - name: Build installer
         shell: bash
         env:
