@@ -71,3 +71,47 @@ pub fn refocus(target: isize) {
         }
     }
 }
+
+fn process_elevated(h: windows::Win32::Foundation::HANDLE) -> Option<bool> {
+    use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows::Win32::System::Threading::OpenProcessToken;
+    unsafe {
+        let mut token = windows::Win32::Foundation::HANDLE::default();
+        OpenProcessToken(h, TOKEN_QUERY, &mut token).ok()?;
+        let mut elev = TOKEN_ELEVATION::default();
+        let mut len = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(&mut elev as *mut _ as *mut core::ffi::c_void),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut len,
+        )
+        .is_ok();
+        let _ = CloseHandle(token);
+        ok.then_some(elev.TokenIsElevated != 0)
+    }
+}
+
+pub fn we_are_elevated() -> bool {
+    unsafe { process_elevated(windows::Win32::System::Threading::GetCurrentProcess()).unwrap_or(false) }
+}
+
+/// Whether the focused app runs as administrator. If we can't tell, assume not and try the paste.
+pub fn foreground_is_elevated() -> bool {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return false;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return false;
+        }
+        let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return false };
+        let r = process_elevated(h);
+        let _ = CloseHandle(h);
+        r.unwrap_or(false)
+    }
+}

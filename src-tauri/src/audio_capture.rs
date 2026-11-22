@@ -35,6 +35,8 @@ struct Shared {
     preroll: Mutex<VecDeque<f32>>,
     preroll_max: Mutex<usize>,
     error: Mutex<Option<String>>,
+    /// The open stream hit a serious error (e.g. the mic was unplugged); reopen next time.
+    broken: std::sync::atomic::AtomicBool,
 }
 
 enum Cmd {
@@ -57,6 +59,7 @@ impl Capture {
             preroll: Mutex::new(VecDeque::new()),
             preroll_max: Mutex::new(0),
             error: Mutex::new(None),
+            broken: std::sync::atomic::AtomicBool::new(false),
         });
         let s2 = shared.clone();
         std::thread::Builder::new()
@@ -118,8 +121,9 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>) {
         match cmd {
             Cmd::Open { device, warm: want_warm, reply } => {
                 warm = want_warm;
+                let broken = shared.broken.swap(false, std::sync::atomic::Ordering::SeqCst);
                 if let Some((_, open_dev, fmt)) = &stream {
-                    if *open_dev == device {
+                    if *open_dev == device && !broken {
                         let _ = reply.send(Ok(*fmt));
                         continue;
                     }
@@ -155,6 +159,9 @@ fn open(host: &cpal::Host, device: Option<&str>, shared: Arc<Shared>) -> Result<
     let err_shared = shared.clone();
     let on_error = move |e: cpal::Error| {
         tracing::warn!("microphone stream error: {e}");
+        if !matches!(e.kind(), cpal::ErrorKind::Xrun | cpal::ErrorKind::RealtimeDenied) {
+            err_shared.broken.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         *err_shared.error.lock() = Some(e.to_string());
     };
     macro_rules! build {

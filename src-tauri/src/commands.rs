@@ -169,7 +169,8 @@ pub async fn reprocess_history_item(app: AppHandle, id: String, mode_id: String)
 #[tauri::command]
 pub async fn retry_history_item(app: AppHandle, id: String) -> Res<Option<Processed>> {
     let c = ctl(&app);
-    let r = c.engine.retry_dictation(&id, None).await;
+    // Retrying by hand also transcribes pieces the speech detector thought were silent.
+    let r = c.engine.retry_dictation_with(&id, None, true).await;
     let _ = app.emit("history-changed", "");
     match r {
         Ok(Outcome::Text(p)) => Ok(Some(p)),

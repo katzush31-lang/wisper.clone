@@ -125,15 +125,19 @@ export default function ScratchpadPage() {
       }, 0);
       void flush();
     });
+    // A dictation that ended without text (cancelled, failed, nothing heard) also ends "Listening".
+    const un2 = events.historyChanged(() => setDictating(false));
     return () => {
       un.then((f) => f()).catch(() => {});
+      un2.then((f) => f()).catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flush]);
 
+  // The same button starts and stops (the shortcut and Esc work too).
   const dictate = async () => {
     try {
-      setDictating(true);
+      setDictating((d) => !d);
       await api.dictateIntoScratchpad();
     } catch (e) {
       setDictating(false);
@@ -211,10 +215,9 @@ export default function ScratchpadPage() {
             <button
               className="btn btn-soft btn-sm"
               onClick={dictate}
-              disabled={dictating}
-              title="Speak, and your words are added to this note"
+              title={dictating ? "Stop and add what you said" : "Speak, and your words are added to this note"}
             >
-              <Mic size={14} /> {dictating ? "Listening…" : "Dictate"}
+              <Mic size={14} /> {dictating ? "Stop" : "Dictate"}
             </button>
             <button
               className="icon-btn"

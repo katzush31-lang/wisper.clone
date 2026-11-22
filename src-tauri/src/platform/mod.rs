@@ -2,7 +2,7 @@
 //! no-op stand-ins on other systems so the rest of the app builds and tests anywhere.
 #![cfg_attr(not(windows), allow(dead_code))]
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
@@ -35,10 +35,10 @@ pub struct HookShared {
     pub capture_down: Mutex<Vec<u32>>,
     /// Install the low-level mouse hook (only when a shortcut uses a mouse button).
     pub mouse_enabled: AtomicBool,
-    /// A Win-key combo was used; mask the Win key-up so the Start menu doesn't open.
-    pub mask_win: AtomicBool,
     /// Shortcuts switched off from the tray menu.
     pub paused: AtomicBool,
+    /// Counts ordinary key presses, so "undo" can tell whether the user typed since.
+    pub typed: AtomicU64,
 }
 
 impl HookShared {
@@ -50,8 +50,8 @@ impl HookShared {
             capture_keys: Mutex::new(Vec::new()),
             capture_down: Mutex::new(Vec::new()),
             mouse_enabled: AtomicBool::new(false),
-            mask_win: AtomicBool::new(false),
             paused: AtomicBool::new(false),
+            typed: AtomicU64::new(0),
         })
     }
 
@@ -86,6 +86,11 @@ impl HookShared {
             }
             self.send(HookEvent::Captured { keys: keys.clone(), done: false });
         } else {
+            // A key that was already down before capture started: let its release through,
+            // otherwise the app would think it is still held.
+            if !held.contains(&vk) {
+                return false;
+            }
             held.retain(|&k| k != vk);
             if held.is_empty() && !keys.is_empty() {
                 self.send(HookEvent::Captured { keys: keys.clone(), done: true });

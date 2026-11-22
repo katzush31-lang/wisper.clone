@@ -59,6 +59,18 @@ const CASES: &[Case] = &[
         check: |o| has(o, "zechus") && has(o, "parnasa") && has(o, "b'ezras Hashem") && has(o, "Shabbos"),
     },
     Case {
+        name: "ordinary English is not turned into Hebrew/Yiddish",
+        transcript: "I'm sure the kids will walk to school from home and we'll have chess after dinner",
+        exe: "whatsapp.exe", title: "WhatsApp", mode: None,
+        check: |o| has(o, "sure") && has(o, "school") && has(o, "from") && has(o, "chess") && !has(o, "shiur") && !has(o, "shul") && !has(o, "frum"),
+    },
+    Case {
+        name: "sound-alike repaired only when English makes no sense",
+        transcript: "may we have the zeus to see nachas from all the kids",
+        exe: "whatsapp.exe", title: "WhatsApp", mode: None,
+        check: |o| has(o, "zechus") && has(o, "nachas") && !has(o, "Zeus"),
+    },
+    Case {
         name: "Yiddish words are not translated",
         transcript: "the shiur was mamesh geshmak and the bochurim loved it",
         exe: "notepad.exe", title: "", mode: None,

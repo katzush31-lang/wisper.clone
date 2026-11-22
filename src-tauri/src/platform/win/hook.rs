@@ -124,15 +124,16 @@ fn handle(code: u32, down: bool) -> bool {
     };
     for a in outcome.actions {
         if a == Action::SuppressStartMenu {
-            s.mask_win.store(true, Ordering::SeqCst);
+            // Tapping an unassigned key while Win/Alt are down stops Windows treating their
+            // release as "open the Start menu", "switch keyboard layout" (Alt+Shift) or
+            // "focus the menu bar" (Alt).
+            send_mask_key();
         } else {
             s.send(HookEvent::Action(a));
         }
     }
-    if !down && vk::normalize(code) == vk::WIN && s.mask_win.swap(false, Ordering::SeqCst) {
-        // Tapping an unassigned key while Win is down stops Windows treating the
-        // Win release as "open the Start menu".
-        send_mask_key();
+    if down && !outcome.swallow && !vk::is_modifier(code) {
+        s.typed.fetch_add(1, Ordering::Relaxed);
     }
     outcome.swallow
 }

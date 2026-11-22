@@ -294,7 +294,15 @@ pub fn insert_text(text: &str, exe: &str) -> InsertOutcome {
     if super::uia::focus_state(400) == FocusState::NotEditable {
         return InsertOutcome::NoTextField;
     }
-    let snapshot = snapshot_clipboard();
+    if super::app::foreground_is_elevated() && !super::app::we_are_elevated() {
+        return InsertOutcome::Failed(
+            "That app is running as administrator, and Windows doesn't let normal apps type into it. Copy the text here instead.".into(),
+        );
+    }
+    // Never overwrite what the user copied unless we could save it first.
+    let Some(snapshot) = snapshot_clipboard() else {
+        return InsertOutcome::Failed("Another app is using the clipboard right now, so Wisper didn't paste. Copy the text here instead.".into());
+    };
     if !put_text(text, true) {
         return InsertOutcome::Failed("Couldn't use the clipboard (another app is holding it).".into());
     }
@@ -311,9 +319,7 @@ pub fn insert_text(text: &str, exe: &str) -> InsertOutcome {
         std::thread::sleep(delay);
         // Only restore if nothing new was copied in the meantime.
         if unsafe { GetClipboardSequenceNumber() } == seq_after_set {
-            if let Some(s) = snapshot {
-                restore_snapshot(&s);
-            }
+            restore_snapshot(&snapshot);
         }
     });
     InsertOutcome::Pasted
@@ -330,16 +336,21 @@ pub fn copy_selection_via_clipboard() -> Option<String> {
     }
     let start = Instant::now();
     let mut text = None;
+    let mut changed = false;
     while start.elapsed() < Duration::from_millis(500) {
         std::thread::sleep(Duration::from_millis(20));
         if unsafe { GetClipboardSequenceNumber() } != before {
+            changed = true;
             std::thread::sleep(Duration::from_millis(30));
             text = read_text();
             break;
         }
     }
-    if let Some(s) = snapshot {
-        restore_snapshot(&s);
+    // Only put the old clipboard back if our Ctrl+C actually replaced it.
+    if changed {
+        if let Some(s) = snapshot {
+            restore_snapshot(&s);
+        }
     }
     text.filter(|t| !t.trim().is_empty())
 }

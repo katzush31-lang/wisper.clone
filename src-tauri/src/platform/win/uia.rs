@@ -8,7 +8,7 @@ use std::time::Duration;
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED};
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextPattern, IUIAutomationValuePattern,
-    TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId,
+    TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, TextUnit_Character, UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId,
     UIA_ComboBoxControlTypeId, UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_HyperlinkControlTypeId,
     UIA_ImageControlTypeId, UIA_ListItemControlTypeId, UIA_MenuItemControlTypeId, UIA_RadioButtonControlTypeId,
     UIA_TabItemControlTypeId, UIA_TextPatternId, UIA_TreeItemControlTypeId, UIA_ValuePatternId,
@@ -115,18 +115,22 @@ fn read(el: &IUIAutomationElement) -> FieldContext {
                 if !selected.is_empty() {
                     ctx.selection = Some(selected);
                 }
-                if let Ok(doc) = tp.DocumentRange() {
-                    if let Ok(before) = doc.Clone() {
-                        if before.MoveEndpointByRange(TextPatternRangeEndpoint_End, &sel, TextPatternRangeEndpoint_Start).is_ok() {
-                            let t = before.GetText(-1).map(bstr_to_string).unwrap_or_default();
-                            ctx.before = Some(tail(&t, 1500));
-                        }
+                // Read only a window around the cursor (never the whole document, which can
+                // be huge and slow in big files).
+                if let Ok(before) = sel.Clone() {
+                    let ok = before.MoveEndpointByRange(TextPatternRangeEndpoint_End, &sel, TextPatternRangeEndpoint_Start).is_ok()
+                        && before.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, -1500).is_ok();
+                    if ok {
+                        let t = before.GetText(1500).map(bstr_to_string).unwrap_or_default();
+                        ctx.before = Some(tail(&t, 1500));
                     }
-                    if let Ok(after) = doc.Clone() {
-                        if after.MoveEndpointByRange(TextPatternRangeEndpoint_Start, &sel, TextPatternRangeEndpoint_End).is_ok() {
-                            let t = after.GetText(400).map(bstr_to_string).unwrap_or_default();
-                            ctx.after = Some(t.chars().take(200).collect());
-                        }
+                }
+                if let Ok(after) = sel.Clone() {
+                    let ok = after.MoveEndpointByRange(TextPatternRangeEndpoint_Start, &sel, TextPatternRangeEndpoint_End).is_ok()
+                        && after.MoveEndpointByUnit(TextPatternRangeEndpoint_End, TextUnit_Character, 200).is_ok();
+                    if ok {
+                        let t = after.GetText(200).map(bstr_to_string).unwrap_or_default();
+                        ctx.after = Some(t.chars().take(200).collect());
                     }
                 }
                 return ctx;

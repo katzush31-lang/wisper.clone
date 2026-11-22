@@ -39,6 +39,14 @@ enum RecMsg {
     SetKind(RecordingKind),
 }
 
+/// Pausing/muting other audio: the token from ducking, and whether the recording already ended
+/// (then a late duck is undone immediately — audio is never left paused or muted).
+#[derive(Default)]
+struct DuckSlot {
+    token: Option<DuckToken>,
+    ended: bool,
+}
+
 struct Recording {
     tx: Sender<RecMsg>,
     /// The window that had focus when recording started (where the text should go).
@@ -47,7 +55,7 @@ struct Recording {
     hands_free: bool,
     target: Target,
     app: AppInfo,
-    duck: Arc<Mutex<Option<DuckToken>>>,
+    duck: Arc<Mutex<DuckSlot>>,
     context: Arc<Mutex<Option<FieldContext>>>,
     hands_free_flag: Arc<AtomicBool>,
     kind_flag: Arc<Mutex<RecordingKind>>,
@@ -56,7 +64,8 @@ struct Recording {
 enum Phase {
     Idle,
     Recording(Recording),
-    Processing { cancelled: Arc<AtomicBool> },
+    /// `token` identifies this job so a late-finishing old job can't reset a newer one.
+    Processing { cancelled: Arc<AtomicBool>, token: u64 },
 }
 
 #[derive(Clone)]
@@ -71,6 +80,8 @@ struct LastResult {
     exe: String,
     hwnd: isize,
     inserted_at: Instant,
+    /// The keyboard hook's typing counter at insertion; if it moved, the user typed since.
+    typed_at_insert: u64,
 }
 
 pub struct Controller {
@@ -85,9 +96,16 @@ pub struct Controller {
     last_bar: Mutex<Option<BarState>>,
     single_tap_hints: AtomicU64,
     dictations_since_suggest: AtomicU64,
+    next_token: AtomicU64,
 }
 
-const UNDO_WINDOW: Duration = Duration::from_secs(10 * 60);
+const UNDO_WINDOW: Duration = Duration::from_secs(2 * 60);
+/// Keep recording this long after the key is released so the last word isn't clipped.
+const TAIL: Duration = Duration::from_millis(250);
+
+fn is_terminal(exe: &str) -> bool {
+    matches!(exe, "windowsterminal.exe" | "cmd.exe" | "powershell.exe" | "pwsh.exe" | "conhost.exe" | "wt.exe" | "mintty.exe" | "putty.exe" | "wsl.exe" | "alacritty.exe" | "wezterm-gui.exe")
+}
 
 impl Controller {
     pub fn new(app: AppHandle, engine: Arc<Engine>, hook: Arc<HookShared>, capture: Capture, data_dir: PathBuf) -> Arc<Self> {
@@ -103,6 +121,7 @@ impl Controller {
             last_bar: Mutex::new(None),
             single_tap_hints: AtomicU64::new(0),
             dictations_since_suggest: AtomicU64::new(0),
+            next_token: AtomicU64::new(1),
         })
     }
 
@@ -178,6 +197,14 @@ impl Controller {
             }
             Action::Finish => self.finish(),
             Action::Cancel(reason) => self.cancel(reason),
+            Action::Busy => {
+                let s = self.settings();
+                platform::play_sound(Sound::Error, if s.sounds.enabled { s.sounds.volume } else { 0.0 });
+                self.show_bar(
+                    self.bar("notice").msg("Still finishing your last dictation").detail("Try again in a moment, or press Esc to stop waiting (it will still be saved)."),
+                    Some(Duration::from_secs(3)),
+                );
+            }
             Action::OneShot(s) => self.one_shot(s),
             Action::SuppressStartMenu => {}
         }
@@ -203,8 +230,14 @@ impl Controller {
     pub fn begin(self: &Arc<Self>, kind: RecordingKind, hands_free: bool, target: Target) {
         {
             let phase = self.phase.lock();
-            if !matches!(*phase, Phase::Idle) {
-                return;
+            match &*phase {
+                Phase::Idle => {}
+                Phase::Recording(_) => return,
+                Phase::Processing { .. } => {
+                    drop(phase);
+                    self.on_action(Action::Busy);
+                    return;
+                }
             }
         }
         let settings = self.settings();
@@ -240,19 +273,34 @@ impl Controller {
             }
         };
         BUSY.store(true, Ordering::SeqCst);
-        if settings.sounds.enabled {
-            platform::play_sound(Sound::Start, settings.sounds.volume);
-        }
-
-        let duck = Arc::new(Mutex::new(None));
+        let duck = Arc::new(Mutex::new(DuckSlot::default()));
         {
             let duck = duck.clone();
             let mode = settings.other_audio;
             let file = self.duck_file();
-            // Give the start sound a moment before pausing other audio.
+            let sounds = settings.sounds.clone();
+            // Wait a moment before the start sound and pausing audio: if this was really
+            // another shortcut (Ctrl+Win+Arrow), it's cancelled by then and nothing happens.
             std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(120));
-                *duck.lock() = Some(platform::duck_other_audio(mode, &file));
+                std::thread::sleep(Duration::from_millis(150));
+                if duck.lock().ended {
+                    return;
+                }
+                if sounds.enabled {
+                    platform::play_sound(Sound::Start, sounds.volume);
+                }
+                std::thread::sleep(Duration::from_millis(60));
+                if duck.lock().ended {
+                    return;
+                }
+                let token = platform::duck_other_audio(mode, &file);
+                let mut slot = duck.lock();
+                if slot.ended {
+                    drop(slot);
+                    platform::restore_other_audio(token, &file);
+                } else {
+                    slot.token = Some(token);
+                }
             });
         }
         let context = Arc::new(Mutex::new(None));
@@ -360,8 +408,9 @@ impl Controller {
             match std::mem::replace(&mut *phase, Phase::Idle) {
                 Phase::Recording(r) => {
                     let cancelled = Arc::new(AtomicBool::new(false));
-                    *phase = Phase::Processing { cancelled: cancelled.clone() };
-                    Some((r, cancelled))
+                    let token = self.next_token.fetch_add(1, Ordering::SeqCst);
+                    *phase = Phase::Processing { cancelled: cancelled.clone(), token };
+                    Some((r, cancelled, token))
                 }
                 other => {
                     *phase = other;
@@ -369,23 +418,26 @@ impl Controller {
                 }
             }
         };
-        let Some((rec, cancelled)) = rec else { return };
+        let Some((rec, cancelled, token)) = rec else { return };
         self.hook.engine.lock().set_processing(true);
-        let (reply_tx, reply_rx) = channel();
-        let _ = rec.tx.send(RecMsg::Finish(reply_tx));
-        self.capture.stop();
         let settings = self.settings();
         if settings.sounds.enabled {
             platform::play_sound(Sound::Stop, settings.sounds.volume);
         }
-        self.restore_audio(&rec);
         let mut st = self.bar("processing").msg("Transcribing…");
         st.kind = if rec.kind == RecordingKind::Command { "command" } else { "dictation" };
         self.show_bar(st, None);
         let me = self.clone();
         std::thread::spawn(move || {
+            // Keep listening a moment so the end of the last word is captured, then stop the
+            // microphone; everything captured is queued before the Finish message.
+            std::thread::sleep(TAIL);
+            me.capture.stop();
+            me.restore_audio(&rec);
+            let (reply_tx, reply_rx) = channel();
+            let _ = rec.tx.send(RecMsg::Finish(reply_tx));
             let Ok(mut finished) = reply_rx.recv_timeout(Duration::from_secs(10)) else {
-                me.done_processing();
+                me.done_processing(token);
                 me.show_bar(me.bar("error").msg("Recording didn't finish properly").detail("The audio is saved in History.").actions(&["history"]), Some(Duration::from_secs(8)));
                 return;
             };
@@ -409,31 +461,33 @@ impl Controller {
                     }
                 }
             }
-            if finished.kind == RecordingKind::Command && finished.ctx.selection.is_none() && rec.target == Target::App {
+            if finished.kind == RecordingKind::Command && finished.ctx.selection.is_none() && rec.target == Target::App && !is_terminal(&rec.app.exe) {
+                platform::refocus(rec.hwnd);
                 finished.ctx.selection = platform::copy_selection_via_clipboard();
             }
-            me.process(finished, rec.target, rec.app, rec.hwnd, cancelled);
+            me.process(finished, rec.target, rec.app, rec.hwnd, cancelled, token);
         });
     }
 
     fn restore_audio(&self, rec: &Recording) {
-        let duck = rec.duck.clone();
-        let file = self.duck_file();
-        std::thread::spawn(move || {
-            // The ducking thread may still be running; wait for its token.
-            for _ in 0..50 {
-                if let Some(t) = duck.lock().take() {
-                    platform::restore_other_audio(t, &file);
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(40));
-            }
-        });
+        let token = {
+            let mut slot = rec.duck.lock();
+            slot.ended = true;
+            slot.token.take()
+        };
+        // If ducking hasn't finished yet, the ducking thread sees `ended` and undoes it itself.
+        if let Some(t) = token {
+            let file = self.duck_file();
+            std::thread::spawn(move || platform::restore_other_audio(t, &file));
+        }
     }
 
-    fn process(self: &Arc<Self>, rec: FinishedRecording, target: Target, app: AppInfo, hwnd: isize, cancelled: Arc<AtomicBool>) {
+    fn process(self: &Arc<Self>, rec: FinishedRecording, target: Target, app: AppInfo, hwnd: isize, cancelled: Arc<AtomicBool>, token: u64) {
         let me = self.clone();
         let kind = rec.kind;
+        // Don't keep the user waiting forever: after this, the dictation carries on in the
+        // background queue and shows up in History (with a notification) when done.
+        let limit = Duration::from_secs(45 + rec.duration_ms / 20_000).min(Duration::from_secs(300));
         tauri::async_runtime::spawn(async move {
             let progress_me = me.clone();
             let progress = move |stage: Stage| {
@@ -452,26 +506,45 @@ impl Controller {
                 st.kind = if kind == RecordingKind::Command { "command" } else { "dictation" };
                 let _ = progress_me.app.emit_to(bar::LABEL, "bar-state", &st);
             };
-            let result = me.engine.process(rec, &progress).await;
+            let result = tokio::time::timeout(limit, me.engine.process(rec, &progress)).await;
             let _ = me.app.emit("history-changed", "");
             let me2 = me.clone();
-            let _ = tauri::async_runtime::spawn_blocking(move || me2.deliver(result, target, app, hwnd, cancelled, kind)).await;
+            let _ = tauri::async_runtime::spawn_blocking(move || match result {
+                Ok(r) => me2.deliver(r, target, app, hwnd, cancelled, kind, token),
+                Err(_) => {
+                    me2.done_processing(token);
+                    if !cancelled.load(Ordering::SeqCst) {
+                        let st = me2
+                            .bar("notice")
+                            .msg("Taking longer than usual")
+                            .detail("Your dictation is saved and will finish in the background. You'll get a notification and find it in History.")
+                            .actions(&["history"]);
+                        me2.show_bar(st, Some(Duration::from_secs(8)));
+                    }
+                }
+            })
+            .await;
         });
     }
 
-    fn deliver(self: &Arc<Self>, result: Result<Outcome, PipelineError>, target: Target, app: AppInfo, hwnd: isize, cancelled: Arc<AtomicBool>, kind: RecordingKind) {
-        self.done_processing();
+    #[allow(clippy::too_many_arguments)]
+    fn deliver(self: &Arc<Self>, result: Result<Outcome, PipelineError>, target: Target, app: AppInfo, hwnd: isize, cancelled: Arc<AtomicBool>, kind: RecordingKind, token: u64) {
         if cancelled.load(Ordering::SeqCst) {
-            self.show_bar(self.bar("notice").msg("Cancelled").detail("The dictation is saved in History."), Some(Duration::from_secs(3)));
+            // Esc already freed Wisper and said so; the result is in History.
+            self.done_processing(token);
             return;
         }
         match result {
+            // Paste first, then free Wisper, so a new dictation can't start mid-paste.
             Ok(Outcome::Text(p)) => self.insert_result(p, target, &app, hwnd, kind),
             Ok(Outcome::NoSpeech { .. }) => {
-                self.show_bar(self.bar("notice").msg("Didn't catch anything").detail("No speech was detected. Check your microphone if this keeps happening."), Some(Duration::from_secs(3)));
+                let mut st = self.bar("notice").msg("Didn't catch anything").detail("No speech was detected. If you did speak, open it in History and choose Retry.");
+                st.actions = vec!["history"];
+                self.show_bar(st, Some(Duration::from_secs(4)));
             }
             Err(e) => self.report_error(&e),
         }
+        self.done_processing(token);
     }
 
     fn insert_result(self: &Arc<Self>, p: Processed, target: Target, app: &AppInfo, hwnd: isize, kind: RecordingKind) {
@@ -494,6 +567,7 @@ impl Controller {
                     exe: app.exe.clone(),
                     hwnd,
                     inserted_at: Instant::now(),
+                    typed_at_insert: self.hook.typed.load(Ordering::SeqCst),
                 });
                 let mut st = self.bar("done");
                 st.dictation_id = Some(p.id.clone());
@@ -524,6 +598,7 @@ impl Controller {
                     exe: String::new(),
                     hwnd,
                     inserted_at: Instant::now() - UNDO_WINDOW,
+                    typed_at_insert: 0,
                 });
                 let mut st = self.bar("notice").msg("No text box was selected").detail("Your text is ready. Copy it here, or click into a text box and press Alt+Shift+Z.");
                 st.text = Some(p.final_text.clone());
@@ -543,10 +618,12 @@ impl Controller {
 
     fn report_error(self: &Arc<Self>, e: &PipelineError) {
         let settings = self.settings();
+        let id = Some(e.id().to_string());
         platform::play_sound(Sound::Error, if settings.sounds.enabled { settings.sounds.volume } else { 0.0 });
         match e {
             PipelineError::Queued { message, .. } => {
-                let st = self.bar("error").msg("Saved — will finish when possible").detail(message.clone()).actions(&["history"]);
+                let mut st = self.bar("error").msg("Saved — will finish when possible").detail(message.clone()).actions(&["history"]);
+                st.dictation_id = id;
                 self.show_bar(st, Some(Duration::from_secs(8)));
                 if settings.notifications.waiting_offline {
                     self.notify("Dictation saved for later", message);
@@ -555,7 +632,8 @@ impl Controller {
             PipelineError::Failed { message, kind, .. } => {
                 let key_problem = matches!(kind, Some(ErrorKind::Auth) | Some(ErrorKind::Quota));
                 let actions: &[&'static str] = if key_problem { &["settings", "history"] } else { &["retry", "history"] };
-                let st = self.bar("error").msg(if key_problem { "AI key problem" } else { "Dictation failed" }).detail(message.clone()).actions(actions);
+                let mut st = self.bar("error").msg(if key_problem { "AI key problem" } else { "Dictation failed" }).detail(message.clone()).actions(actions);
+                st.dictation_id = id;
                 self.show_bar(st, Some(Duration::from_secs(12)));
                 if key_problem && settings.notifications.api_key_problem {
                     self.notify("An API key needs attention", message);
@@ -576,10 +654,17 @@ impl Controller {
         let _ = self.app.notification().builder().title(title).body(body).show();
     }
 
-    fn done_processing(&self) {
-        *self.phase.lock() = Phase::Idle;
-        self.hook.engine.lock().set_processing(false);
-        BUSY.store(false, Ordering::SeqCst);
+    /// Frees Wisper for the next dictation — only if this job is still the current one.
+    fn done_processing(&self, token: u64) {
+        let mut phase = self.phase.lock();
+        if let Phase::Processing { token: t, .. } = &*phase {
+            if *t == token {
+                *phase = Phase::Idle;
+                drop(phase);
+                self.hook.engine.lock().set_processing(false);
+                BUSY.store(false, Ordering::SeqCst);
+            }
+        }
     }
 
     pub fn cancel(self: &Arc<Self>, reason: CancelReason) {
@@ -592,6 +677,7 @@ impl Controller {
                 self.restore_audio(&r);
                 self.hook.engine.lock().reset_recording();
                 BUSY.store(false, Ordering::SeqCst);
+                let _ = self.app.emit("history-changed", "");
                 match reason {
                     CancelReason::SingleTap => {
                         // Show the hint only the first few times.
@@ -608,10 +694,14 @@ impl Controller {
                     }
                 }
             }
-            Phase::Processing { cancelled } => {
+            Phase::Processing { cancelled, .. } => {
+                // Free Wisper straight away; the job finishes in the background and is saved
+                // in History, but its text won't be pasted.
                 cancelled.store(true, Ordering::SeqCst);
-                *phase = Phase::Processing { cancelled };
                 drop(phase);
+                self.hook.engine.lock().set_processing(false);
+                BUSY.store(false, Ordering::SeqCst);
+                let _ = self.app.emit("history-changed", "");
                 self.show_bar(self.bar("notice").msg("Cancelled").detail("The dictation is saved in History."), Some(Duration::from_secs(2)));
             }
             Phase::Idle => {}
@@ -682,6 +772,22 @@ impl Controller {
     fn replace_last(self: &Arc<Self>, last: &LastResult, new_text: String, label: &str, showing_raw: bool, new_clean: Option<String>) {
         platform::wait_for_modifiers_released(1500);
         platform::refocus(last.hwnd);
+        // Swapping works by undoing the paste (Ctrl+Z), so only do it when that's safe: same
+        // window, and nothing typed since. Otherwise offer the new text to copy instead.
+        let moved = last.hwnd != 0 && platform::foreground_window() != last.hwnd;
+        let typed = self.hook.typed.load(Ordering::SeqCst) != last.typed_at_insert;
+        if moved || typed {
+            let why = if moved {
+                "Go back to the window where you dictated and try again, or copy the new version here."
+            } else {
+                "You've typed since then, so replacing it could undo your own typing. Copy the new version here instead."
+            };
+            let mut st = self.bar("notice").msg("Can't swap the text automatically").detail(why);
+            st.text = Some(new_text);
+            st.actions = vec!["copy"];
+            self.show_bar(st, Some(Duration::from_secs(12)));
+            return;
+        }
         platform::send_undo();
         std::thread::sleep(Duration::from_millis(120));
         match platform::insert_text(&new_text, &last.exe) {
@@ -692,6 +798,7 @@ impl Controller {
                     clean_text: new_clean.unwrap_or_else(|| last.clean_text.clone()),
                     showing_raw,
                     inserted_at: Instant::now(),
+                    typed_at_insert: self.hook.typed.load(Ordering::SeqCst),
                     ..last.clone()
                 });
                 let mut st = self.bar("done").msg(label.to_string());
@@ -778,17 +885,22 @@ impl Controller {
             return;
         }
         let Some(t) = self.settings().transforms.into_iter().find(|t| t.id == id) else { return };
+        let hwnd = platform::foreground_window();
         let (exe, title) = platform::foreground_app();
         let app_info = apps::identify(&exe, &title);
         self.show_bar(self.bar("processing").msg(format!("{}…", t.name)), None);
         let ctx = platform::read_context(700);
-        let selection = ctx.selection.filter(|s| !s.trim().is_empty()).or_else(platform::copy_selection_via_clipboard);
+        let selection = ctx
+            .selection
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| if is_terminal(&app_info.exe) { None } else { platform::copy_selection_via_clipboard() });
         let Some(selection) = selection else {
             self.show_bar(self.bar("notice").msg("Select some text first").detail(format!("Highlight text in any app, then use {}.", t.name)), Some(Duration::from_secs(4)));
             return;
         };
         let cancelled = Arc::new(AtomicBool::new(false));
-        *self.phase.lock() = Phase::Processing { cancelled: cancelled.clone() };
+        let token = self.next_token.fetch_add(1, Ordering::SeqCst);
+        *self.phase.lock() = Phase::Processing { cancelled: cancelled.clone(), token };
         self.hook.engine.lock().set_processing(true);
         let me = self.clone();
         tauri::async_runtime::spawn(async move {
@@ -796,14 +908,15 @@ impl Controller {
             let r = me.engine.run_instruction(&t.instructions, Some(&selection), &cctx).await;
             let me2 = me.clone();
             let _ = tauri::async_runtime::spawn_blocking(move || {
-                me2.done_processing();
                 if cancelled.load(Ordering::SeqCst) {
+                    me2.done_processing(token);
                     return;
                 }
                 match r {
                     Ok(text) => {
                         me2.engine.record_transform(&t.name, &selection, &text, &app_info);
                         let _ = me2.app.emit("history-changed", "");
+                        platform::refocus(hwnd);
                         match platform::insert_text(&text, &app_info.exe) {
                             InsertOutcome::Pasted => {
                                 let mut st = me2.bar("done").msg(t.name.clone());
@@ -824,6 +937,7 @@ impl Controller {
                         me2.show_bar(st, Some(Duration::from_secs(8)));
                     }
                 }
+                me2.done_processing(token);
             })
             .await;
         });

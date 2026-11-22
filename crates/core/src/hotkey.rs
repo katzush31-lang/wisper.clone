@@ -226,6 +226,9 @@ pub enum Action {
     Finish,
     Cancel(CancelReason),
     OneShot(OneShot),
+    /// A dictation shortcut was pressed while the previous dictation is still being
+    /// processed; tell the user instead of silently ignoring it.
+    Busy,
     /// Ask the OS layer to tap a harmless key now, so releasing Win/Alt afterwards doesn't
     /// open the Start menu, switch keyboard layout (Alt+Shift) or focus an app's menu bar.
     SuppressStartMenu,
@@ -593,7 +596,8 @@ impl GestureEngine {
                             self.finish_by_press(out);
                         }
                     }
-                    State::Processing | State::WaitRelease => {}
+                    State::Processing => out.actions.push(Action::Busy),
+                    State::WaitRelease => {}
                 }
             }
             Binding::HandsFree => match self.state {
@@ -608,7 +612,8 @@ impl GestureEngine {
                     out.actions.push(Action::BecameHandsFree);
                 }
                 State::HandsFree { releasing: false, .. } => self.finish_by_press(out),
-                State::HandsFree { releasing: true, .. } | State::Processing | State::WaitRelease => {}
+                State::Processing => out.actions.push(Action::Busy),
+                State::HandsFree { releasing: true, .. } | State::WaitRelease => {}
             },
         }
     }
@@ -801,7 +806,7 @@ mod tests {
         let mut e = engine();
         e.set_processing(true);
         let a = without_suppress(press(&mut e, &[CTRL, WIN], 0));
-        assert!(a.is_empty());
+        assert_eq!(a, vec![Action::Busy]);
         release(&mut e, &[WIN, CTRL], 50);
         let out = e.key_down(ESC, 100);
         assert_eq!(out.actions, vec![Action::Cancel(CancelReason::User)]);

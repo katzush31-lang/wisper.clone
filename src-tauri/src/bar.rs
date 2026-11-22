@@ -69,10 +69,30 @@ pub fn emit(app: &AppHandle, state: &BarState) {
     let _ = app.emit_to(LABEL, "bar-state", state);
     if state.phase == "hidden" {
         hide(app);
-    } else if let Some(w) = app.get_webview_window(LABEL) {
+        return;
+    }
+    if let Some(w) = app.get_webview_window(LABEL) {
+        // The window is transparent but still catches clicks, so keep it only as big as what
+        // it shows (a tiny pill when resting, a card for messages).
+        let (width, height) = size_for(state.phase);
+        let scale = w.scale_factor().unwrap_or(1.0);
+        let want = tauri::PhysicalSize::new((width * scale).round() as u32, (height * scale).round() as u32);
+        if w.inner_size().map(|s| s != want).unwrap_or(true) {
+            let _ = w.set_size(tauri::LogicalSize::new(width, height));
+            position(app, TOP.load(std::sync::atomic::Ordering::SeqCst));
+        }
         if !w.is_visible().unwrap_or(false) {
             show(app);
         }
+    }
+}
+
+fn size_for(phase: &str) -> (f64, f64) {
+    match phase {
+        "idle" => (300.0, 56.0),
+        "listening" => (400.0, 110.0),
+        "processing" => (340.0, 64.0),
+        _ => (WIDTH, HEIGHT),
     }
 }
 
