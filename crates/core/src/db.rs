@@ -513,7 +513,8 @@ impl Db {
 
     pub fn ids_older_than(&self, cutoff_ms: i64) -> DbResult<Vec<String>> {
         let conn = self.c();
-        let mut stmt = conn.prepare("SELECT id FROM dictations WHERE created_at < ?1 AND status NOT IN ('queued','recording','transcribing','cleaning')")?;
+        // Failed dictations are kept until they're sorted out (retried or deleted by hand).
+        let mut stmt = conn.prepare("SELECT id FROM dictations WHERE created_at < ?1 AND status NOT IN ('queued','recording','transcribing','cleaning','failed')")?;
         let rows = stmt.query_map([cutoff_ms], |r| r.get(0))?;
         rows.collect()
     }
@@ -586,9 +587,16 @@ impl Db {
             let mut conn = self.c();
             let tx = conn.transaction()?;
             for e in entries {
+                let r = serde_json::to_string(&e.replace).unwrap();
+                let sl = serde_json::to_string(&e.sounds_like).unwrap();
                 added += tx.execute(
                     "INSERT OR IGNORE INTO dictionary (word, replace_json, sounds_like_json, source, keyword, created_at) VALUES (?1,?2,?3,'builtin',?4,?5)",
-                    params![e.word, serde_json::to_string(&e.replace).unwrap(), serde_json::to_string(&e.sounds_like).unwrap(), e.keyword as i64, now_ms()],
+                    params![e.word, r, sl, e.keyword as i64, now_ms()],
+                )?;
+                // Refresh built-in words the user hasn't edited (edits turn them into "user").
+                tx.execute(
+                    "UPDATE dictionary SET replace_json=?2, sounds_like_json=?3, keyword=?4 WHERE word=?1 AND source='builtin'",
+                    params![e.word, r, sl, e.keyword as i64],
                 )?;
             }
             tx.commit()?;
@@ -617,9 +625,11 @@ impl Db {
         Ok(conn.last_insert_rowid())
     }
 
+    /// Editing a built-in word makes it the user's own, so starter-list updates won't undo it.
     pub fn dict_update(&self, e: &DictEntry) -> DbResult<()> {
         self.c().execute(
-            "UPDATE dictionary SET word=?2, replace_json=?3, sounds_like_json=?4, starred=?5, keyword=?6 WHERE id=?1",
+            "UPDATE dictionary SET word=?2, replace_json=?3, sounds_like_json=?4, starred=?5, keyword=?6,
+             source=CASE WHEN source='builtin' THEN 'user' ELSE source END WHERE id=?1",
             params![e.id, e.word, serde_json::to_string(&e.replace).unwrap(), serde_json::to_string(&e.sounds_like).unwrap(), e.starred as i64, e.keyword as i64],
         )?;
         Ok(())

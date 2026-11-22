@@ -163,8 +163,11 @@ pub fn apply_replacements(text: &str, entries: &[DictEntry]) -> (String, usize) 
                 rules.push((r.as_str(), e.word.as_str()));
             }
         }
-        // The word itself with the wrong case (e.g. "hashem" → "Hashem").
-        rules.push((e.word.as_str(), e.word.as_str()));
+        // The word itself with the wrong case (e.g. "hashem" → "Hashem"). Skipped for very
+        // short words, which are too likely to be something else ("nu", "Rav").
+        if e.word.chars().count() >= 4 {
+            rules.push((e.word.as_str(), e.word.as_str()));
+        }
     }
     rules.sort_by_key(|(from, _)| std::cmp::Reverse(from.split_whitespace().count() * 1000 + from.len()));
 
@@ -186,6 +189,12 @@ pub fn apply_replacements(text: &str, entries: &[DictEntry]) -> (String, usize) 
                 continue;
             }
             let original = &s[a..b];
+            // Leave deliberate ALL-CAPS alone when only the casing would change ("ABBA").
+            let all_caps = original.chars().filter(|c| c.is_alphabetic()).count() > 1
+                && original.chars().filter(|c| c.is_alphabetic()).all(|c| c.is_uppercase());
+            if all_caps && original.eq_ignore_ascii_case(to) {
+                continue;
+            }
             let replacement = match_case(original, to, at_sentence_start(&s, a));
             if original != replacement {
                 fixes += 1;
@@ -253,7 +262,12 @@ pub fn keywords(entries: &[DictEntry], limit: usize) -> Vec<String> {
             picked.push(e);
         }
     }
-    for e in entries.iter().filter(|e| e.source == EntrySource::Builtin && e.keyword) {
+    // Remaining built-in hints in the starter list's priority order (most important first),
+    // not alphabetically, so a limit never drops words like "zechus".
+    let rank = |w: &str| crate::hebrew::STARTER.iter().position(|t| t.word == w).unwrap_or(usize::MAX);
+    let mut builtin: Vec<&DictEntry> = entries.iter().filter(|e| e.source == EntrySource::Builtin && e.keyword).collect();
+    builtin.sort_by_key(|e| rank(&e.word));
+    for e in builtin {
         if !picked.iter().any(|p| p.word == e.word) {
             picked.push(e);
         }
@@ -417,6 +431,17 @@ mod tests {
     }
 
     #[test]
+    fn meaning_changing_rewrites_are_gone() {
+        let e = entries();
+        // chas v'chalila only gets its own spelling fixed, never turned into chas v'shalom.
+        assert_eq!(apply_replacements("chas v'chalila", &e).0, "chas v'chalilah");
+        for s in ["Learning Mishnayos tonight", "Two yeshivas joined", "B'H all is well", "I love ABBA", "NU what now", "Sit on the bench"] {
+            let (out, _) = apply_replacements(s, &e);
+            assert_eq!(out, s, "changed: {s}");
+        }
+    }
+
+    #[test]
     fn longest_phrase_wins() {
         let e = entries();
         let (s, _) = apply_replacements("boruch HaShem we're fine", &e);
@@ -433,6 +458,11 @@ mod tests {
         assert_eq!(k[0], "Menachem Mendel");
         assert_eq!(k.len(), 10);
         assert!(keywords(&e, 500).iter().any(|w| w == "zechus"));
+        // The most important words survive a tight limit.
+        let top = keywords(&e, 12);
+        for w in ["zechus", "parnasa", "b'ezras Hashem", "Hashem"] {
+            assert!(top.iter().any(|k| k == w), "{w} missing from {top:?}");
+        }
     }
 
     #[test]

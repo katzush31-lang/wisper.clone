@@ -37,3 +37,7 @@ pub fn duck_other_audio(_mode: OtherAudio, _state_file: &std::path::Path) -> Duc
 }
 pub fn restore_other_audio(_t: DuckToken, _state_file: &std::path::Path) {}
 pub fn restore_after_crash(_state_file: &std::path::Path) {}
+pub fn foreground_window() -> isize {
+    0
+}
+pub fn refocus(_target: isize) {}

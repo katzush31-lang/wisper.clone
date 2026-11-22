@@ -226,7 +226,8 @@ pub enum Action {
     Finish,
     Cancel(CancelReason),
     OneShot(OneShot),
-    /// Ask the OS layer to stop the Start menu opening when Win is released.
+    /// Ask the OS layer to tap a harmless key now, so releasing Win/Alt afterwards doesn't
+    /// open the Start menu, switch keyboard layout (Alt+Shift) or focus an app's menu bar.
     SuppressStartMenu,
 }
 
@@ -547,7 +548,7 @@ impl GestureEngine {
         now: u64,
         out: &mut Outcome,
     ) {
-        if combo.has_win() {
+        if combo.has_win() || combo.contains(vk::ALT) {
             out.actions.push(Action::SuppressStartMenu);
         }
         match binding {
@@ -730,11 +731,11 @@ mod tests {
         cfg.dictate = vec![KeyCombo::new(&[CTRL, WIN])];
         cfg.hands_free = vec![KeyCombo::new(&[ALT, SHIFT, SPACE])];
         let mut e = GestureEngine::new(cfg, Timing::default());
-        let a = press(&mut e, &[ALT, SHIFT, SPACE], 0);
+        let a = without_suppress(press(&mut e, &[ALT, SHIFT, SPACE], 0));
         assert_eq!(a, vec![Action::Start { kind: RecordingKind::Dictation, hands_free: true }]);
         release(&mut e, &[SPACE, SHIFT, ALT], 100);
         assert!(e.is_recording());
-        let a = press(&mut e, &[ALT, SHIFT, SPACE], 5000);
+        let a = without_suppress(press(&mut e, &[ALT, SHIFT, SPACE], 5000));
         assert_eq!(a, vec![Action::Finish]);
     }
 
@@ -756,7 +757,7 @@ mod tests {
         press(&mut e, &[CTRL, ALT], 0);
         let out = e.key_down(0x51, 10);
         assert!(out.swallow);
-        assert_eq!(out.actions, vec![Action::Start { kind: RecordingKind::Command, hands_free: false }]);
+        assert_eq!(without_suppress(out.actions), vec![Action::Start { kind: RecordingKind::Command, hands_free: false }]);
     }
 
     #[test]
@@ -816,7 +817,8 @@ mod tests {
         press(&mut e, &[ALT, SHIFT], 0);
         let out = e.key_down(0x5A, 10);
         assert!(out.swallow);
-        assert_eq!(out.actions, vec![Action::OneShot(OneShot::PasteLast)]);
+        // Alt+Shift with the letter swallowed must be masked or Windows switches layout.
+        assert_eq!(out.actions, vec![Action::SuppressStartMenu, Action::OneShot(OneShot::PasteLast)]);
         assert!(e.key_up(0x5A, 50).swallow);
     }
 

@@ -84,7 +84,7 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "AI prompt keeps every requirement",
-        transcript: "as a prompt write a python function that reads a csv file skips the header converts the dates to iso format and returns a list of dictionaries also add type hints",
+        transcript: "as a prompt, write a python function that reads a csv file skips the header converts the dates to iso format and returns a list of dictionaries also add type hints",
         exe: "notepad.exe", title: "", mode: None,
         check: |o| lower_has(o, "csv") && lower_has(o, "header") && lower_has(o, "iso") && lower_has(o, "type hints") && !has(o, "def "),
     },

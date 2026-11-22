@@ -157,34 +157,25 @@ pub fn detect_spoken_switch(text: &str, modes: &[Mode]) -> Option<(String, Strin
         .map(|(n, _)| regex::escape(n).replace("\\ ", r"[\s\-]+"))
         .collect::<Vec<_>>()
         .join("|");
-    let pattern = format!(
-        r"(?i)^\s*(?:(?:ok(?:ay)?|so|um+|uh+)[,.]?\s+)?(?:(?:as|in|use|using|make (?:it|this)|format (?:it|this) as|write (?:it|this) as)\s+)(?:an?\s+|the\s+)?({alternatives})(?:\s+(?:mode|format|style))?\b(?P<rest>.*)$"
+    let lead = r"^\s*(?:(?:ok(?:ay)?|so|um+|uh+)[,.]?\s+)?";
+    // "As an email, …" / "Format this as a list: …" — the phrase must be followed by
+    // punctuation, so ordinary sentences ("As an email I sent yesterday…") are left alone.
+    let as_form = format!(
+        r"(?is){lead}(?:as|format (?:it|this) as|write (?:it|this) as|make (?:it|this))\s+(?:an?\s+|the\s+)?({alternatives})(?:\s+(?:mode|format|style))?\s*[,.:;!\-\u{{2014}}](?P<rest>.*)$"
     );
-    let alt_pattern = format!(r"(?i)^\s*({alternatives})\s+(?:mode|format|style)\b(?P<rest>.*)$");
-    for pat in [pattern, alt_pattern] {
-        let Ok(re) = Regex::new(&format!("(?s){pat}")) else { continue };
+    // "Email mode: …" / "In list mode, …" / "Use casual style …" — the word mode/format/style
+    // makes it unambiguous.
+    let mode_form = format!(
+        r"(?is){lead}(?:(?:in|use|using)\s+)?(?:an?\s+|the\s+)?({alternatives})\s+(?:mode|format|style)\b[,.:;!\-\u{{2014}}]?(?P<rest>.*)$"
+    );
+    for pat in [as_form, mode_form] {
+        let Ok(re) = Regex::new(&pat) else { continue };
         let Some(caps) = re.captures(text) else { continue };
         let spoken = caps.get(1)?.as_str().to_lowercase();
         let spoken = Regex::new(r"[\s\-]+").unwrap().replace_all(&spoken, " ").to_string();
         let id = names.iter().find(|(n, _)| *n == spoken).map(|(_, id)| id.clone())?;
         let rest = caps.name("rest").map(|m| m.as_str()).unwrap_or("");
-        let rest_trim = rest.trim_start();
-        // Must be followed by punctuation, the end, or the start of the actual content —
-        // not by a word that shows the phrase was part of a sentence ("as a list of…").
-        let next_word: String = rest_trim
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '\'')
-            .collect::<String>()
-            .to_lowercase();
-        let starts_with_punct = rest_trim.starts_with([',', '.', ':', ';', '!', '-', '\u{2014}']);
-        const CONTINUATIONS: &[&str] = &[
-            "of", "for", "to", "that", "which", "is", "was", "were", "and", "or", "with", "in", "on",
-            "about", "from", "who", "where", "when", "would", "will", "should", "could", "can", "but",
-        ];
-        if !starts_with_punct && !rest_trim.is_empty() && CONTINUATIONS.contains(&next_word.as_str()) {
-            return None;
-        }
-        let cleaned = rest_trim.trim_start_matches([',', '.', ':', ';', '!', '-', '\u{2014}', ' ']).to_string();
+        let cleaned = rest.trim_start_matches([',', '.', ':', ';', '!', '-', '\u{2014}', ' ']).to_string();
         return Some((id, cleaned));
     }
     None
@@ -233,15 +224,33 @@ mod tests {
             detect_spoken_switch("As bullet points, first thing", &m).map(|x| x.0),
             Some("list".into())
         );
+        assert_eq!(
+            detect_spoken_switch("In list mode, eggs and milk", &m),
+            Some(("list".into(), "eggs and milk".into()))
+        );
+        assert_eq!(
+            detect_spoken_switch("Use casual style. see you later", &m),
+            Some(("casual".into(), "see you later".into()))
+        );
     }
 
     #[test]
     fn ignores_ordinary_sentences() {
         let m = modes();
-        assert_eq!(detect_spoken_switch("As a list of reasons, I think we should go", &m), None);
-        assert_eq!(detect_spoken_switch("As an email was sent yesterday", &m), None);
-        assert_eq!(detect_spoken_switch("I sent an email", &m), None);
-        assert_eq!(detect_spoken_switch("Email David about the list", &m), None);
+        for s in [
+            "As a list of reasons, I think we should go",
+            "As an email was sent yesterday",
+            "I sent an email",
+            "Email David about the list",
+            "In an email I sent yesterday, John said no.",
+            "In formal settings we stand.",
+            "Use mail merge for this.",
+            "Using text messages is fine.",
+            "As a prompt engineer I think this works",
+            "Make it a list of everything we need",
+        ] {
+            assert_eq!(detect_spoken_switch(s, &m), None, "{s}");
+        }
     }
 
     #[test]

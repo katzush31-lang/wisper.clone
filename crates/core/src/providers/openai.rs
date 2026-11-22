@@ -20,7 +20,7 @@ pub struct OpenAi {
 
 impl OpenAi {
     pub fn new(key: &str) -> Self {
-        Self { key: key.trim().to_string(), base: BASE.into(), client: http_client(Duration::from_secs(180)) }
+        Self { key: key.trim().to_string(), base: BASE.into(), client: http_client(Duration::from_secs(90)) }
     }
 
     pub fn with_base(mut self, base: &str) -> Self {

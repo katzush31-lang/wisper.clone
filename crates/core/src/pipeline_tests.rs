@@ -147,8 +147,15 @@ async fn short_dictation_end_to_end() {
     assert_eq!(item.status, "done");
     assert_eq!(item.raw_text.as_deref(), Some("um we need parnassa and zchus"));
     assert!(item.duration_ms >= 3500);
-    // Audio was compressed for history.
-    let audio = item.audio_path.unwrap();
+    // Audio was compressed for history (in the background, after the text was ready).
+    let mut audio = item.audio_path.unwrap();
+    for _ in 0..100 {
+        if audio.ends_with(".flac") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        audio = h.engine.db.get(&id).unwrap().unwrap().audio_path.unwrap();
+    }
     assert!(audio.ends_with(".flac"), "{audio}");
     assert!(std::path::Path::new(&audio).exists());
     // The speech model got the Hebrew/Yiddish hints.
@@ -396,4 +403,31 @@ async fn retention_removes_old_audio_only() {
     let item = h.engine.db.get(&id).unwrap().unwrap();
     assert!(item.audio_path.is_none());
     assert!(item.final_text.is_some());
+}
+
+#[test]
+fn cleanup_guard_catches_answers() {
+    assert!(looks_like_cleanup("um so we need to go to the shop", "We need to go to the shop."));
+    assert!(!looks_like_cleanup("what is the capital of france", "The capital of France is Paris. It is known for the Eiffel Tower, which was built in 1889 for the World's Fair and is one of the most visited monuments."));
+    assert!(!looks_like_cleanup(&"word ".repeat(40), "Okay."));
+    assert!(looks_like_cleanup("eggs milk bread", "- Eggs\n- Milk\n- Bread"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn silent_judged_recording_can_be_transcribed_anyway() {
+    let h = harness();
+    let rec = record(&h, ctx("notepad.exe", ""), &[(false, 2000)]);
+    let id = rec.id.clone();
+    assert!(matches!(h.engine.process(rec, &no_progress()).await.unwrap(), Outcome::NoSpeech { .. }));
+    // Wait for the background archive to finish.
+    for _ in 0..50 {
+        if h.engine.db.get(&id).unwrap().unwrap().audio_path.unwrap().ends_with(".flac") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    h.stt.script.lock().unwrap().push_back(Ok("very quiet words".into()));
+    let r = h.engine.retry_dictation_with(&id, None, true).await.unwrap();
+    let Outcome::Text(p) = r else { panic!("{r:?}") };
+    assert_eq!(p.final_text, "Very quiet words.");
 }

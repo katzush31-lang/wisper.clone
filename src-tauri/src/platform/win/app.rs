@@ -2,7 +2,8 @@
 
 use windows::Win32::Foundation::{CloseHandle, HWND};
 use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
-use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId};
+use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, IsWindow, SetForegroundWindow};
+use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::core::{w, PWSTR};
 
 fn exe_of(hwnd: HWND) -> String {
@@ -45,5 +46,28 @@ pub fn foreground_app() -> (String, String) {
             }
         }
         (exe, title)
+    }
+}
+
+pub fn foreground_window() -> isize {
+    unsafe { GetForegroundWindow().0 as isize }
+}
+
+/// If one of Wisper's own windows (e.g. the bar after a click) has focus, hand focus back to
+/// the window the user was dictating into, so the paste lands there.
+pub fn refocus(target: isize) {
+    if target == 0 {
+        return;
+    }
+    unsafe {
+        let fg = GetForegroundWindow();
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(fg, Some(&mut pid));
+        let ours = pid == GetCurrentProcessId();
+        let target = HWND(target as _);
+        if (fg.0.is_null() || ours) && fg != target && IsWindow(Some(target)).as_bool() {
+            let _ = SetForegroundWindow(target);
+            std::thread::sleep(std::time::Duration::from_millis(80));
+        }
     }
 }

@@ -21,7 +21,7 @@ pub struct Anthropic {
 
 impl Anthropic {
     pub fn new(key: &str) -> Self {
-        Self { key: key.trim().to_string(), base: BASE.into(), client: http_client(Duration::from_secs(240)) }
+        Self { key: key.trim().to_string(), base: BASE.into(), client: http_client(Duration::from_secs(120)) }
     }
 
     pub fn with_base(mut self, base: &str) -> Self {

@@ -41,6 +41,8 @@ enum RecMsg {
 
 struct Recording {
     tx: Sender<RecMsg>,
+    /// The window that had focus when recording started (where the text should go).
+    hwnd: isize,
     kind: RecordingKind,
     hands_free: bool,
     target: Target,
@@ -67,6 +69,7 @@ struct LastResult {
     showing_raw: bool,
     raw_text: String,
     exe: String,
+    hwnd: isize,
     inserted_at: Instant,
 }
 
@@ -205,6 +208,7 @@ impl Controller {
             }
         }
         let settings = self.settings();
+        let hwnd = platform::foreground_window();
         let (exe, title) = platform::foreground_app();
         let app_info = if target == Target::Scratchpad { apps::identify("wisper.exe", "Scratchpad") } else { apps::identify(&exe, &title) };
         let ctx = CaptureContext { app: app_info.clone(), ..Default::default() };
@@ -272,6 +276,7 @@ impl Controller {
         }
         *self.phase.lock() = Phase::Recording(Recording {
             tx,
+            hwnd,
             kind,
             hands_free,
             target,
@@ -407,7 +412,7 @@ impl Controller {
             if finished.kind == RecordingKind::Command && finished.ctx.selection.is_none() && rec.target == Target::App {
                 finished.ctx.selection = platform::copy_selection_via_clipboard();
             }
-            me.process(finished, rec.target, rec.app, cancelled);
+            me.process(finished, rec.target, rec.app, rec.hwnd, cancelled);
         });
     }
 
@@ -426,7 +431,7 @@ impl Controller {
         });
     }
 
-    fn process(self: &Arc<Self>, rec: FinishedRecording, target: Target, app: AppInfo, cancelled: Arc<AtomicBool>) {
+    fn process(self: &Arc<Self>, rec: FinishedRecording, target: Target, app: AppInfo, hwnd: isize, cancelled: Arc<AtomicBool>) {
         let me = self.clone();
         let kind = rec.kind;
         tauri::async_runtime::spawn(async move {
@@ -450,18 +455,18 @@ impl Controller {
             let result = me.engine.process(rec, &progress).await;
             let _ = me.app.emit("history-changed", "");
             let me2 = me.clone();
-            let _ = tauri::async_runtime::spawn_blocking(move || me2.deliver(result, target, app, cancelled, kind)).await;
+            let _ = tauri::async_runtime::spawn_blocking(move || me2.deliver(result, target, app, hwnd, cancelled, kind)).await;
         });
     }
 
-    fn deliver(self: &Arc<Self>, result: Result<Outcome, PipelineError>, target: Target, app: AppInfo, cancelled: Arc<AtomicBool>, kind: RecordingKind) {
+    fn deliver(self: &Arc<Self>, result: Result<Outcome, PipelineError>, target: Target, app: AppInfo, hwnd: isize, cancelled: Arc<AtomicBool>, kind: RecordingKind) {
         self.done_processing();
         if cancelled.load(Ordering::SeqCst) {
             self.show_bar(self.bar("notice").msg("Cancelled").detail("The dictation is saved in History."), Some(Duration::from_secs(3)));
             return;
         }
         match result {
-            Ok(Outcome::Text(p)) => self.insert_result(p, target, &app, kind),
+            Ok(Outcome::Text(p)) => self.insert_result(p, target, &app, hwnd, kind),
             Ok(Outcome::NoSpeech { .. }) => {
                 self.show_bar(self.bar("notice").msg("Didn't catch anything").detail("No speech was detected. Check your microphone if this keeps happening."), Some(Duration::from_secs(3)));
             }
@@ -469,12 +474,13 @@ impl Controller {
         }
     }
 
-    fn insert_result(self: &Arc<Self>, p: Processed, target: Target, app: &AppInfo, kind: RecordingKind) {
+    fn insert_result(self: &Arc<Self>, p: Processed, target: Target, app: &AppInfo, hwnd: isize, kind: RecordingKind) {
         if target == Target::Scratchpad {
             let _ = self.app.emit_to("main", "scratchpad-text", &p.final_text);
             self.show_bar(self.bar("done").msg("Added to Scratchpad"), Some(Duration::from_secs(2)));
             return;
         }
+        platform::refocus(hwnd);
         let outcome = platform::insert_text(&p.final_text, &app.exe);
         match outcome {
             InsertOutcome::Pasted => {
@@ -486,6 +492,7 @@ impl Controller {
                     showing_raw: false,
                     raw_text: p.raw_text.clone(),
                     exe: app.exe.clone(),
+                    hwnd,
                     inserted_at: Instant::now(),
                 });
                 let mut st = self.bar("done");
@@ -515,6 +522,7 @@ impl Controller {
                     showing_raw: false,
                     raw_text: p.raw_text.clone(),
                     exe: String::new(),
+                    hwnd,
                     inserted_at: Instant::now() - UNDO_WINDOW,
                 });
                 let mut st = self.bar("notice").msg("No text box was selected").detail("Your text is ready. Copy it here, or click into a text box and press Alt+Shift+Z.");
@@ -673,6 +681,7 @@ impl Controller {
 
     fn replace_last(self: &Arc<Self>, last: &LastResult, new_text: String, label: &str, showing_raw: bool, new_clean: Option<String>) {
         platform::wait_for_modifiers_released(1500);
+        platform::refocus(last.hwnd);
         platform::send_undo();
         std::thread::sleep(Duration::from_millis(120));
         match platform::insert_text(&new_text, &last.exe) {

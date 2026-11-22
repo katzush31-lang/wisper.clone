@@ -70,7 +70,7 @@ impl ProviderError {
             ErrorKind::Timeout => format!("{who} took too long to answer. Wisper will retry automatically."),
             ErrorKind::BadRequest => format!("{who} rejected the request. Try another model in Settings → AI providers. Details: {}", self.message),
             ErrorKind::Refused => format!("{who} declined to process this text, so it was inserted without AI cleanup."),
-            ErrorKind::BadResponse => format!("{who} sent an unexpected reply. Wisper will retry automatically."),
+            ErrorKind::BadResponse => format!("{who} sent an unexpected reply. Your dictation is saved; try again from History."),
         }
     }
 }

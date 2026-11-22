@@ -186,6 +186,12 @@ impl Engine {
         modes::all_modes(&s.mode_overrides, &s.custom_modes)
     }
 
+    /// Marks a dictation as being worked on for as long as the guard lives, so the queue
+    /// never processes it twice — and is released even if the work is cancelled midway.
+    fn claim(self: &Arc<Self>, id: &str) -> Option<ClaimGuard> {
+        self.try_claim(id).then(|| ClaimGuard { engine: self.clone(), id: id.to_string() })
+    }
+
     fn try_claim(&self, id: &str) -> bool {
         self.active.lock().unwrap_or_else(|p| p.into_inner()).insert(id.to_string())
     }
@@ -227,8 +233,11 @@ impl Engine {
             meta: Some(json!({ "context": ctx })),
             ..Default::default()
         };
-        self.db.insert_dictation(&item).map_err(std::io::Error::other)?;
         self.try_claim(&id);
+        if let Err(e) = self.db.insert_dictation(&item) {
+            self.release(&id);
+            return Err(std::io::Error::other(e));
+        }
         Ok(Session {
             id,
             kind,
@@ -328,10 +337,10 @@ impl Engine {
 
     /// Finishes a recording: waits for the segment transcriptions, then cleans up the text.
     pub async fn process(self: &Arc<Self>, rec: FinishedRecording, progress: &(dyn Fn(Stage) + Send + Sync)) -> Result<Outcome, PipelineError> {
-        let id = rec.id.clone();
-        let result = self.process_inner(rec, progress).await;
-        self.release(&id);
-        result
+        // The session claimed the id when it started; this guard releases it however we exit
+        // (including when the caller gives up waiting and drops this future).
+        let _guard = ClaimGuard { engine: self.clone(), id: rec.id.clone() };
+        self.process_inner(rec, progress).await
     }
 
     async fn process_inner(self: &Arc<Self>, rec: FinishedRecording, progress: &(dyn Fn(Stage) + Send + Sync)) -> Result<Outcome, PipelineError> {
@@ -339,7 +348,7 @@ impl Engine {
         let stop_at = Instant::now();
         if !rec.heard_speech {
             let _ = self.db.set_status(&id, Status::Empty);
-            self.archive_audio(&id, &rec.pcm);
+            self.archive_audio_later(&id, &rec.pcm);
             return Ok(Outcome::NoSpeech { id });
         }
         let _ = self.db.set_status(&id, Status::Transcribing);
@@ -366,13 +375,16 @@ impl Engine {
         let _ = self.db.set_raw_text(&id, &raw);
         if raw.trim().is_empty() {
             let _ = self.db.set_status(&id, Status::Empty);
-            self.archive_audio(&id, &rec.pcm);
+            self.archive_audio_later(&id, &rec.pcm);
             return Ok(Outcome::NoSpeech { id });
         }
         progress(Stage::Cleaning);
         let _ = self.db.set_status(&id, Status::Cleaning);
         let out = self.finish_text(&id, rec.kind, &raw, &rec.ctx, None, rec.duration_ms, transcribe_wait, stop_at).await;
-        self.archive_audio(&id, &rec.pcm);
+        // Compress the recording after the text is ready, so pasting never waits for it.
+        if out.is_ok() {
+            self.archive_audio_later(&id, &rec.pcm);
+        }
         out
     }
 
@@ -579,7 +591,15 @@ impl Engine {
         let mut parts = Vec::with_capacity(n);
         for (r, chunk) in results.into_iter().zip(chunks.iter()) {
             let resp = r?;
-            parts.push(text::sanitize_model_output(&resp.text, chunk));
+            let out = text::sanitize_model_output(&resp.text, chunk);
+            if !looks_like_cleanup(chunk, &out) {
+                return Err(ProviderError::new(
+                    ErrorKind::BadResponse,
+                    model.provider_name(),
+                    "the AI's reply didn't look like a tidied version of what you said (it may have answered it instead)",
+                ));
+            }
+            parts.push(out);
         }
         Ok(parts.join(if n > 1 { "\n\n" } else { "" }))
     }
@@ -598,9 +618,8 @@ impl Engine {
             max_tokens: max_tokens_for(selection.unwrap_or("")).max(2048),
         };
         let resp = self.retry.run(|| model.complete(req.clone())).await?;
-        let out = text::sanitize_model_output(&resp.text, selection.unwrap_or(""));
-        let (fixed, _) = dictionary::apply_replacements(&out, &entries);
-        Ok(fixed)
+        // No automatic spelling rewrites here: the selection may be someone else's text.
+        Ok(text::sanitize_model_output(&resp.text, selection.unwrap_or("")))
     }
 
     /// Records a transform/command that didn't involve a recording (history + stats).
@@ -654,15 +673,19 @@ impl Engine {
     /// Re-transcribes a saved dictation from its audio (failed, queued, or crashed mid-way).
     /// Segments that already have text are reused.
     pub async fn retry_dictation(self: &Arc<Self>, id: &str, forced_mode: Option<&str>) -> Result<Outcome, PipelineError> {
-        if !self.try_claim(id) {
-            return Err(PipelineError::Queued { id: id.into(), message: "Already being processed.".into(), kind: ErrorKind::Server });
-        }
-        let r = self.retry_inner(id, forced_mode).await;
-        self.release(id);
-        r
+        self.retry_dictation_with(id, forced_mode, false).await
     }
 
-    async fn retry_inner(self: &Arc<Self>, id: &str, forced_mode: Option<&str>) -> Result<Outcome, PipelineError> {
+    /// `force_all`: also transcribe pieces the speech detector judged silent (the user asked
+    /// for this one explicitly, e.g. very quiet speech).
+    pub async fn retry_dictation_with(self: &Arc<Self>, id: &str, forced_mode: Option<&str>, force_all: bool) -> Result<Outcome, PipelineError> {
+        let Some(_guard) = self.claim(id) else {
+            return Err(PipelineError::Queued { id: id.into(), message: "Already being processed.".into(), kind: ErrorKind::Server });
+        };
+        self.retry_inner(id, forced_mode, force_all).await
+    }
+
+    async fn retry_inner(self: &Arc<Self>, id: &str, forced_mode: Option<&str>, force_all: bool) -> Result<Outcome, PipelineError> {
         let missing = || PipelineError::Failed { id: id.into(), message: "That dictation no longer exists.".into(), kind: None };
         let item = self.db.get(id).ok().flatten().ok_or_else(missing)?;
         let ctx = context_from_item(&item);
@@ -718,7 +741,7 @@ impl Engine {
                 texts.push(t);
                 continue;
             }
-            if !s.has_speech {
+            if !s.has_speech && !force_all {
                 continue;
             }
             let a = (s.start_sample as usize).min(all.len());
@@ -749,8 +772,8 @@ impl Engine {
         }
         let _ = self.db.set_status(id, Status::Cleaning);
         let out = self.finish_text(id, kind, &raw, &ctx, forced_mode, item.duration_ms as u64, started.elapsed().as_millis() as u64, started).await;
-        if audio.extension().map(|e| e == "pcm").unwrap_or(false) {
-            self.archive_audio(id, &audio);
+        if out.is_ok() && audio.extension().map(|e| e == "pcm").unwrap_or(false) {
+            self.archive_audio_later(id, &audio);
         }
         out
     }
@@ -788,7 +811,12 @@ impl Engine {
         n
     }
 
-    /// Converts the raw recording to FLAC in the background and records the new path.
+    fn archive_audio_later(self: &Arc<Self>, id: &str, pcm: &Path) {
+        let (me, id, pcm) = (self.clone(), id.to_string(), pcm.to_path_buf());
+        tokio::task::spawn_blocking(move || me.archive_audio(&id, &pcm));
+    }
+
+    /// Converts the raw recording to FLAC and records the new path.
     pub fn archive_audio(&self, id: &str, pcm: &Path) {
         if !pcm.exists() {
             return;
@@ -852,6 +880,17 @@ impl Engine {
     }
 }
 
+pub struct ClaimGuard {
+    engine: Arc<Engine>,
+    id: String,
+}
+
+impl Drop for ClaimGuard {
+    fn drop(&mut self) {
+        self.engine.release(&self.id);
+    }
+}
+
 pub struct CleanResult {
     pub text: String,
     pub clean: Option<String>,
@@ -859,6 +898,19 @@ pub struct CleanResult {
     pub mode_name: String,
     pub fixes: i64,
     pub error: Option<ProviderError>,
+}
+
+/// Guards against the model answering or rewriting instead of cleaning: the cleaned text
+/// should be roughly as long as what was said (fillers removed, formatting added).
+pub fn looks_like_cleanup(input: &str, output: &str) -> bool {
+    let i = text::word_count(input);
+    let o = text::word_count(output);
+    if i == 0 {
+        return o == 0;
+    }
+    let too_long = o > (i as f64 * 1.6) as usize + 8;
+    let too_short = i >= 12 && o * 3 < i;
+    !(too_long || too_short)
 }
 
 fn cleanup_model(s: &Settings) -> String {
