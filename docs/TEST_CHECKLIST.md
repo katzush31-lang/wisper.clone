@@ -20,6 +20,9 @@ Tick these off after installing. If something doesn't behave as described, note 
 - [ ] Tap Ctrl + Win twice quickly: hands-free mode with "Press Ctrl + Win to finish and paste" above the bar. Talk for a minute, tap once to finish.
 - [ ] Single short tap: nothing is pasted (a hint explains hold vs double-tap).
 - [ ] Press **Esc** while recording: cancelled, nothing pasted, still listed in History as cancelled.
+- [ ] Dictate, and while it says "Cleaning up…" press Ctrl + Win again: you hear a short sound and see "Still finishing your last dictation". Press Esc to stop waiting, then dictate again: it works straight away.
+- [ ] If you have a Hebrew keyboard layout: press Alt + Shift + Z (paste last). Your keyboard layout should NOT switch.
+- [ ] Press Ctrl + Win + Right arrow (switch virtual desktop): no start sound, nothing recorded.
 - [ ] Click on the desktop (no text box) and dictate: the bar says no text box was selected and offers **Copy**.
 - [ ] Try in WhatsApp, Gmail (browser), Word and Claude. Each should paste correctly.
 
@@ -31,12 +34,14 @@ Tick these off after installing. If something doesn't behave as described, note 
 - [ ] "Let's meet Tuesday, no wait, Wednesday" → only Wednesday.
 - [ ] Ums and ahs are removed.
 - [ ] In Gmail, dictate "Hi David … thanks … Best, Asher": laid out as an email.
-- [ ] Start with "as a list": eggs, milk, bread becomes a list.
+- [ ] Start with "as a list", pause for a moment, then say "eggs, milk, bread": it becomes a list. (The short pause matters: it tells Wisper you meant a mode switch, not a sentence that starts "As a list of…".)
 - [ ] Dictate a question into Claude ("what's the capital of France"): it's typed as your question, not answered.
 - [ ] Right after a dictation, click **Undo** on the bar: the original wording replaces it. Click again: back to the cleaned version.
+- [ ] Dictate, type a few letters yourself, then press Alt + Shift + U: Wisper refuses to swap (so it can't undo your typing) and offers Copy instead.
 - [ ] **Redo as** on the bar → pick another mode: the text is replaced.
 - [ ] Style page: edit a mode's instructions, try it, then "Reset to default".
-- [ ] Make a custom mode (e.g. "WhatsApp to family") and start a dictation with "as WhatsApp to family".
+- [ ] Make a custom mode (e.g. "WhatsApp to family") and start a dictation with "as WhatsApp to family", then a short pause.
+- [ ] Start a sentence normally with "In an email I sent yesterday…": nothing is cut off.
 
 ## 6. Command mode and transforms
 - [ ] Select a paragraph, hold **Ctrl + Win + Alt**, say "make this shorter", let go: the selection is replaced.

@@ -28,7 +28,7 @@ If Wispr Flow is still running, quit it first. Both apps use **Ctrl + Win** by d
 | Dictate hands-free (long dictations) | Tap **Ctrl + Win** twice quickly, speak as long as you like, tap once more to finish. Or use **Ctrl + Win + Space** |
 | Cancel | **Esc**, or the ✕ on the bar. The recording is still kept in History |
 | Edit text by voice | Select text, hold **Ctrl + Win + Alt**, say what to do ("make this shorter", "turn this into bullet points"), let go |
-| Use a format just once | Start with "as an email…", "as a list…", or the name of one of your modes |
+| Use a format just once | Start with "as an email", "as a list" or "as" + one of your modes, then a short pause ("As an email, hi David…") |
 | Get the original wording back | Click **Undo** on the bar right after, or press **Alt + Shift + U** (press again to swap back) |
 | Redo in another style | Click **Redo as** on the bar, or press **Alt + Shift + R** |
 | Paste your last dictation again | **Alt + Shift + Z** (copy it: **Alt + Shift + X**) |

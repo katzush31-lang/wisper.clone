@@ -4,12 +4,18 @@
 |---|---|---|
 | 2026-11-22 | Planning | Research, plan (`docs/PLAN.md`) approved. Repo made public; updater signing secret added. |
 | 2026-11-22 | 0 Foundations | Done. CI builds + publishes installer on every push to `main` (v0.1.2 first release). |
-| 2026-11-22 | 1–5 (built together) | Core engine, Windows layer, all UI pages built. Real-API behaviour not yet verified (no keys in CI). Awaiting owner testing — see `docs/TEST_CHECKLIST.md`. |
+| 2026-11-22 | 1–5 (built together) | Core engine, Windows layer, all UI pages built and visually checked. |
+| 2026-11-22 | Review rounds | Independent reviewer (Opus) — round 1: 5 must-fix + 12 should-fix, all addressed (d2bbb37, 754355c); round 2: 2 partial + 10 new, addressed (ba018a9); round 3 in progress. Releases v0.1.3–v0.1.6. |
 
 ## What exists
 - **Core (`crates/core`)**: hotkey gestures, audio DSP (resample, VAD, pause-based segments, FLAC, crash-safe PCM), Hebrew/Yiddish starter dictionary, dictionary/suggestions, snippets, modes + spoken switch, prompts, OpenAI/Claude providers with retry, SQLite history/stats, pipeline (transcribe while recording, cleanup with fallback, offline queue, crash recovery, retention), sounds.
 - **App (`src-tauri`)**: keyboard/mouse hook with Start-menu masking, cpal capture (+warm pre-roll), clipboard paste with full restore, UI Automation context/selection, media pause/mute with crash-safe restore, controller (bar states, undo/redo-as, paste/copy last, transforms, Scratchpad dictation, queue worker, notifications), Credential Manager keys, backup/restore, auto-update.
 - **UI (`src`)**: home + history detail, insights, dictionary (+suggestions, CSV import), snippets (+JSON import), style (modes, custom modes, per-app styles), transforms, scratchpad, full settings, floating bar.
+
+## Decisions made during review
+- Spoken mode switch needs a pause/punctuation after the phrase ("As an email, …") or the word "mode/style/format" with a lead-in ("In list mode …"), so ordinary sentences are never cut.
+- Undo/redo of an inserted dictation works by Ctrl+Z + paste, so it's only allowed in the same window, within 2 minutes, and if nothing was typed since.
+- A dictation that takes more than ~45 s (+ a little per minute of audio) moves to the background queue and appears in History when done.
 
 ## Next
 - Owner tests on Windows (checklist), then fix what they find.
