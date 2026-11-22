@@ -4,6 +4,20 @@ import { ConfirmDialog, Modal, SettingGroup, SettingRow, errorText, useToast } f
 import { DEFAULT_HOTKEYS, HOTKEY_ACTIONS, setCombo } from "./helpers";
 import { useSaver, type SectionProps } from "./GeneralSection";
 
+/** Windows virtual-key code for a browser key event (browsers report Windows codes in keyCode). */
+export function keyToVk(e: { key: string; code: string; keyCode: number }): number | null {
+  if (e.key === "Control") return 17;
+  if (e.key === "Shift") return 16;
+  if (e.key === "Alt" || e.key === "AltGraph") return 18;
+  if (e.key === "Meta" || e.key === "OS") return 91;
+  if (e.code === "Space") return 32;
+  if (/^Key[A-Z]$/.test(e.code)) return e.code.charCodeAt(3);
+  if (/^Digit[0-9]$/.test(e.code)) return e.code.charCodeAt(5);
+  const f = /^F([0-9]{1,2})$/.exec(e.code);
+  if (f) return 111 + Number(f[1]);
+  return e.keyCode > 0 && e.keyCode < 256 ? e.keyCode : null;
+}
+
 function KeyCaps({ combo }: { combo: KeyCombo | undefined }) {
   if (!combo || combo.keys.length === 0) return <span className="muted">Not set</span>;
   return (
@@ -33,40 +47,73 @@ function CaptureDialog({
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
-  const active = useRef(true);
+  // Keys pressed in this window, in case Windows' keyboard hook doesn't report them.
+  const local = useRef<{ keys: number[]; held: number[]; done: boolean }>({ keys: [], held: [], done: false });
+
+  const show = (k: number[], isDone: boolean) => {
+    setKeys(k);
+    setError(null);
+    setDone(isDone);
+    if (isDone) {
+      api
+        .describeCombo(k)
+        .then((d) => {
+          setLabel(d.label);
+          setError(d.error);
+        })
+        .catch((e) => setError(errorText(e)));
+    }
+  };
 
   useEffect(() => {
-    active.current = true;
     let off: (() => void) | undefined;
     let dead = false;
     events
       .hotkeyCaptured((r) => {
-        setKeys(r.keys);
+        local.current.done = r.done;
         setLabel(r.label);
-        setError(null);
-        if (r.done) {
-          setDone(true);
-          api
-            .describeCombo(r.keys)
-            .then((d) => {
-              setLabel(d.label);
-              setError(d.error);
-            })
-            .catch((e) => setError(errorText(e)));
-        } else {
-          setDone(false);
-        }
+        show(r.keys, r.done);
       })
       .then((u) => (dead ? u() : (off = u)));
     api.startHotkeyCapture().catch((e) => setProblem(errorText(e)));
+
+    const onDown = (e: KeyboardEvent) => {
+      const vk = keyToVk(e);
+      if (vk === null || e.key === "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      const l = local.current;
+      if (l.done) return;
+      if (!l.held.includes(vk)) l.held.push(vk);
+      if (!l.keys.includes(vk) && l.keys.length < 4) l.keys.push(vk);
+      show([...l.keys], false);
+    };
+    const onUp = (e: KeyboardEvent) => {
+      const vk = keyToVk(e);
+      const l = local.current;
+      if (vk === null || l.done || !l.held.includes(vk)) return;
+      e.preventDefault();
+      l.held = l.held.filter((k) => k !== vk);
+      // Windows often swallows the Win key's release, so finish when the last non-Win key is up.
+      if (l.held.filter((k) => k !== 91 && k !== 92).length === 0 && l.keys.length > 0) {
+        l.done = true;
+        l.held = [];
+        show([...l.keys], true);
+      }
+    };
+    window.addEventListener("keydown", onDown, true);
+    window.addEventListener("keyup", onUp, true);
     return () => {
       dead = true;
       off?.();
+      window.removeEventListener("keydown", onDown, true);
+      window.removeEventListener("keyup", onUp, true);
       api.stopHotkeyCapture().catch(() => {});
     };
   }, []);
 
   const retry = () => {
+    local.current = { keys: [], held: [], done: false };
     setKeys([]);
     setLabel("");
     setDone(false);
@@ -133,9 +180,9 @@ export default function ShortcutsSection({ settings, update, onBusy }: SectionPr
       <SettingGroup>
         {HOTKEY_ACTIONS.map((a) => (
           <SettingRow key={a.id} title={a.title} description={a.description}>
-            <div className="combo-list">
+            <button type="button" className="combo-list combo-click" onClick={() => setEditing(a.id)} title="Click to change">
               {settings.hotkeys[a.id].length === 0 ? <KeyCaps combo={undefined} /> : settings.hotkeys[a.id].map((c, i) => <KeyCaps key={i} combo={c} />)}
-            </div>
+            </button>
             <button className="btn btn-soft" onClick={() => setEditing(a.id)} aria-label={`Change shortcut for ${a.title}`}>
               Change
             </button>

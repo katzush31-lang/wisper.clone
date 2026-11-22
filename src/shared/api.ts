@@ -313,6 +313,8 @@ export const api = {
   stopMicTest: () => call<void>("stop_mic_test"),
 
   /** Starts listening for a key combination; result arrives as a "hotkey-captured" event */
+  /** Where the bar's visible pill/card is (CSS px); the rest of the bar window lets clicks through */
+  barHitArea: (area: { x: number; y: number; width: number; height: number } | null) => call<void>("bar_hit_area", { area }),
   startHotkeyCapture: () => call<void>("start_hotkey_capture"),
   stopHotkeyCapture: () => call<void>("stop_hotkey_capture"),
   describeCombo: (keys: number[]) => call<{ label: string; error: string | null }>("describe_combo", { keys }),

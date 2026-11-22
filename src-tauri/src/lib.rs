@@ -131,6 +131,7 @@ pub fn run() {
             commands::list_microphones,
             commands::start_mic_test,
             commands::stop_mic_test,
+            commands::bar_hit_area,
             commands::start_hotkey_capture,
             commands::stop_hotkey_capture,
             commands::describe_combo,

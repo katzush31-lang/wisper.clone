@@ -16,7 +16,7 @@ body.bar-body,
   background: #121212;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 999px;
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.3);
 }
 .pill.idle {
   width: 42px;
@@ -140,7 +140,7 @@ body.bar-body,
 }
 .pill.listening.command {
   border-color: #7fc2b8;
-  box-shadow: 0 0 0 2px rgba(127, 194, 184, 0.35), 0 4px 18px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 0 0 2px rgba(127, 194, 184, 0.35), 0 2px 7px rgba(0, 0, 0, 0.3);
 }
 .pill-tag {
   font-size: 11px;
@@ -268,7 +268,7 @@ body.bar-body,
   background: #121212;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 12px;
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.35);
 }
 .menu-item {
   display: flex;
@@ -292,7 +292,7 @@ body.bar-body,
   border-radius: 14px;
   background: #1a1a1a;
   border: 1px solid rgba(255, 255, 255, 0.16);
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.35);
 }
 .card-msg.error {
   border-color: #e0604a;

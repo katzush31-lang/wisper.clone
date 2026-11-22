@@ -494,6 +494,12 @@ pub fn stop_mic_test(app: AppHandle) {
     }
 }
 
+/// The bar page reports where its visible pill/card is, so the rest of the window lets clicks through.
+#[tauri::command]
+pub fn bar_hit_area(app: AppHandle, area: Option<crate::bar::HitArea>) {
+    crate::bar::set_hit_area(&app, area);
+}
+
 #[tauri::command]
 pub fn start_hotkey_capture(app: AppHandle) {
     ctl(&app).hook.start_capture();

@@ -58,4 +58,7 @@ Tick these off after installing. If something doesn't behave as described, note 
 - [ ] Scratchpad: Win + Alt + S, press Dictate, speak; the text lands in the note.
 - [ ] Insights shows your words, speed, time saved and streak.
 - [ ] Dark theme (moon icon, top right) looks right.
+- [ ] Dictionary: scroll down through the whole list (all three tabs).
+- [ ] Settings → Shortcuts: click the keys (or Change), press a new combination, let go, Save. Try the new shortcut.
+- [ ] Turn on the always-visible bar: you can click and hover on things right next to it; only the small pill itself responds.
 - [ ] Settings → Backup & account → Export backup, then Restore from it.

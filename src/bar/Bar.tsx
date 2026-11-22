@@ -2,6 +2,7 @@ import { Check, ChevronUp, Copy, Mic, RotateCcw, Settings, Undo2, X, History, Wa
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api, events, formatDuration, type BarState } from "../shared/api";
 import { barHeight, pushLevel } from "./waveform";
+import { sameRect, unionRect, type Rect } from "./hit";
 
 const BARS = 12;
 
@@ -68,6 +69,38 @@ export default function Bar() {
   const [levels, setLevels] = useState<number[]>(() => Array(BARS).fill(0));
   const [menuOpen, setMenuOpen] = useState(false);
   const phaseRef = useRef(s.phase);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const sentRect = useRef<Rect | null>(null);
+
+  // Tell the app where the visible pill/card is, so the rest of the (transparent) bar window
+  // lets clicks through to whatever is behind it.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    // The window may have been resized for the new state: always report again.
+    sentRect.current = null;
+    const measure = () => {
+      const parts = Array.from(root.querySelectorAll<HTMLElement>(".pill, .bar-above > *")).map((el) => el.getBoundingClientRect());
+      const r = unionRect(parts);
+      if (sameRect(r, sentRect.current)) return;
+      sentRect.current = r;
+      api.barHitArea(r).catch(() => {});
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(root);
+    root.querySelectorAll(".pill, .bar-above > *").forEach((el) => ro.observe(el));
+    const frame = requestAnimationFrame(measure);
+    root.addEventListener("transitionend", measure);
+    root.addEventListener("animationend", measure);
+    root.addEventListener("transitionrun", measure);
+    return () => {
+      ro.disconnect();
+      cancelAnimationFrame(frame);
+      root.removeEventListener("transitionend", measure);
+      root.removeEventListener("animationend", measure);
+      root.removeEventListener("transitionrun", measure);
+    };
+  }, [s.phase, s.kind, s.handsFree, s.message, s.detail, s.actions.length, menuOpen]);
 
   useEffect(() => {
     document.body.classList.add("bar-body");
@@ -212,7 +245,7 @@ export default function Bar() {
   }
 
   return (
-    <div className="bar-root">
+    <div className="bar-root" ref={rootRef}>
       {above && <div className="bar-above">{above}</div>}
       {pill}
     </div>

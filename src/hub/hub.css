@@ -100,7 +100,9 @@
   box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* Pages scroll inside the white panel (the Scratchpad manages its own scrolling). */
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 .page {
   flex: 1;
