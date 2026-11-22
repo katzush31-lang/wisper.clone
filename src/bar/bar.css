@@ -62,7 +62,7 @@ body.bar-body,
   gap: 8px;
   height: 40px;
   padding: 0 8px;
-  max-width: 300px;
+  max-width: 400px;
   white-space: nowrap;
   font-size: 13px;
   font-weight: 500;
@@ -339,4 +339,9 @@ body.bar-body,
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
+}
+
+.pill.done .pill-msg {
+  flex-shrink: 0;
+  max-width: 110px;
 }

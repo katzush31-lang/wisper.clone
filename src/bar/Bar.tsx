@@ -189,7 +189,7 @@ export default function Bar() {
             </button>
           </div>
           {s.detail && <div className="card-detail">{s.detail}</div>}
-          {isError && s.actions.length > 0 && (
+          {s.actions.length > 0 && (
             <div className="card-actions">
               {has("retry") && <PillButton label="Try again" icon={<RotateCcw size={12} />} onClick={() => run(api.barRetry())} />}
               {has("copy") && <PillButton label="Copy text" icon={<Copy size={12} />} onClick={() => run(api.barCopy())} />}

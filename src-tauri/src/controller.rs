@@ -60,7 +60,11 @@ enum Phase {
 #[derive(Clone)]
 struct LastResult {
     id: String,
+    /// What's currently in the app.
     final_text: String,
+    /// The AI-cleaned version (for toggling back after an undo).
+    clean_text: String,
+    showing_raw: bool,
     raw_text: String,
     exe: String,
     inserted_at: Instant,
@@ -472,6 +476,8 @@ impl Controller {
                 *self.last.lock() = Some(LastResult {
                     id: p.id.clone(),
                     final_text: p.final_text.clone(),
+                    clean_text: p.final_text.clone(),
+                    showing_raw: false,
                     raw_text: p.raw_text.clone(),
                     exe: app.exe.clone(),
                     inserted_at: Instant::now(),
@@ -498,6 +504,8 @@ impl Controller {
                 *self.last.lock() = Some(LastResult {
                     id: p.id.clone(),
                     final_text: p.final_text.clone(),
+                    clean_text: p.final_text.clone(),
+                    showing_raw: false,
                     raw_text: p.raw_text.clone(),
                     exe: String::new(),
                     inserted_at: Instant::now() - UNDO_WINDOW,
@@ -639,32 +647,42 @@ impl Controller {
         self.last.lock().clone().filter(|l| l.inserted_at.elapsed() < UNDO_WINDOW && !l.exe.is_empty())
     }
 
-    /// Swaps the last inserted text for the original transcript.
+    /// Swaps the last inserted text for the original transcript; pressing again swaps back.
     pub fn undo_cleanup(self: &Arc<Self>) {
         let Some(last) = self.recent_insert() else {
             self.show_bar(self.bar("notice").msg("Nothing recent to undo"), Some(Duration::from_secs(2)));
             return;
         };
-        if last.raw_text.trim() == last.final_text.trim() {
+        if last.raw_text.trim() == last.clean_text.trim() {
             self.show_bar(self.bar("notice").msg("Already the original wording"), Some(Duration::from_secs(2)));
             return;
         }
-        self.replace_last(&last, last.raw_text.trim().to_string(), "Original transcript");
+        if last.showing_raw {
+            self.replace_last(&last, last.clean_text.clone(), "Cleaned-up version", false, None);
+        } else {
+            self.replace_last(&last, last.raw_text.trim().to_string(), "Original transcript", true, None);
+        }
     }
 
-    fn replace_last(self: &Arc<Self>, last: &LastResult, new_text: String, label: &str) {
+    fn replace_last(self: &Arc<Self>, last: &LastResult, new_text: String, label: &str, showing_raw: bool, new_clean: Option<String>) {
         platform::wait_for_modifiers_released(1500);
         platform::send_undo();
         std::thread::sleep(Duration::from_millis(120));
         match platform::insert_text(&new_text, &last.exe) {
             InsertOutcome::Pasted => {
                 let _ = self.engine.db.set_final_text(&last.id, &new_text);
-                *self.last.lock() = Some(LastResult { final_text: new_text.clone(), inserted_at: Instant::now(), ..last.clone() });
+                *self.last.lock() = Some(LastResult {
+                    final_text: new_text.clone(),
+                    clean_text: new_clean.unwrap_or_else(|| last.clean_text.clone()),
+                    showing_raw,
+                    inserted_at: Instant::now(),
+                    ..last.clone()
+                });
                 let mut st = self.bar("done").msg(label.to_string());
                 st.text = Some(new_text);
                 st.dictation_id = Some(last.id.clone());
                 st.modes = self.modes_for_bar();
-                st.actions = vec!["rerun", "copy"];
+                st.actions = vec!["undo", "rerun", "copy"];
                 self.show_bar(st, Some(Duration::from_secs(4)));
                 let _ = self.app.emit("history-changed", "");
             }
@@ -702,7 +720,7 @@ impl Controller {
             match me.engine.reprocess(&last.id, &mode_id).await {
                 Ok(p) => {
                     let me2 = me.clone();
-                    let _ = tauri::async_runtime::spawn_blocking(move || me2.replace_last(&last, p.final_text.clone(), &p.mode_name)).await;
+                    let _ = tauri::async_runtime::spawn_blocking(move || me2.replace_last(&last, p.final_text.clone(), &p.mode_name, false, Some(p.final_text.clone()))).await;
                 }
                 Err(e) => me.report_error(&e),
             }

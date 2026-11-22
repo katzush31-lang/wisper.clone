@@ -34,6 +34,17 @@ jobs:
         with:
           key: core-linux
       - run: cargo test -p wisper-core --locked
+      - name: Cleanup quality tests against the real Claude API (only when API keys are set)
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            cargo test -p wisper-core --locked --test golden -- --ignored --nocapture
+          else
+            echo "No ANTHROPIC_API_KEY secret yet; skipping real-API quality tests."
+          fi
 
   windows:
     name: Windows installer
