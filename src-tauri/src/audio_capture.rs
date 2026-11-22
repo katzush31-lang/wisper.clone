@@ -4,6 +4,7 @@
 //! recording starts with what was said just before the key press.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,12 +37,23 @@ struct Shared {
     preroll_max: Mutex<usize>,
     error: Mutex<Option<String>>,
     /// The open stream hit a serious error (e.g. the mic was unplugged); reopen next time.
-    broken: std::sync::atomic::AtomicBool,
+    broken: AtomicBool,
+    /// The session currently using the microphone (0 = nobody). Set before the stream is
+    /// opened, so a late stop or close from someone else can never close it.
+    active: AtomicU64,
+    /// Settings changed while the mic was in use: close the stream when that session ends.
+    close_when_released: AtomicBool,
 }
 
 enum Cmd {
     Open { device: Option<String>, warm: bool, reply: Sender<Result<Format, String>> },
-    Close { force: bool },
+    /// A session finished. Closes the stream unless "keep microphone ready" is on, and only if
+    /// no newer session has started in the meantime.
+    Release,
+    /// Close as soon as nobody is using the microphone (settings changed).
+    CloseWhenFree,
+    /// Close now, whoever is using it (app exiting).
+    CloseNow,
 }
 
 #[derive(Clone)]
@@ -49,9 +61,8 @@ pub struct Capture {
     cmd: Sender<Cmd>,
     shared: Arc<Shared>,
     format: Arc<Mutex<Option<Format>>>,
-    /// Identifies who is currently receiving audio, so a stale stop can't cut off a newer
-    /// recording.
-    session: Arc<std::sync::atomic::AtomicU64>,
+    /// Hands out session ids.
+    next_session: Arc<AtomicU64>,
 }
 
 impl Capture {
@@ -62,51 +73,77 @@ impl Capture {
             preroll: Mutex::new(VecDeque::new()),
             preroll_max: Mutex::new(0),
             error: Mutex::new(None),
-            broken: std::sync::atomic::AtomicBool::new(false),
+            broken: AtomicBool::new(false),
+            active: AtomicU64::new(0),
+            close_when_released: AtomicBool::new(false),
         });
         let s2 = shared.clone();
         std::thread::Builder::new()
             .name("wisper-audio".into())
             .spawn(move || audio_thread(rx, s2))
             .expect("spawn audio thread");
-        Capture { cmd: tx, shared, format: Arc::new(Mutex::new(None)), session: Arc::new(std::sync::atomic::AtomicU64::new(0)) }
+        Capture { cmd: tx, shared, format: Arc::new(Mutex::new(None)), next_session: Arc::new(AtomicU64::new(1)) }
     }
 
     /// Opens the microphone (if not already open) and starts sending chunks to `sink`.
     /// Returns the stream format, any pre-roll audio captured before this call, and a
     /// session id for `stop`.
     pub fn start(&self, device: Option<String>, warm: bool, sink: Sink) -> Result<(Format, Chunk, u64), String> {
+        // Claim the microphone before opening it, so a late stop from an earlier session
+        // (queued behind this Open) is recognised as stale and ignored.
+        let id = self.next_session.fetch_add(1, Ordering::SeqCst);
+        self.shared.active.store(id, Ordering::SeqCst);
         let (rtx, rrx) = channel();
-        self.cmd.send(Cmd::Open { device, warm, reply: rtx }).map_err(|e| e.to_string())?;
-        let format = rrx
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(|_| "The microphone didn't respond. Check it's connected, or pick another one in Settings.".to_string())??;
+        let opened = self
+            .cmd
+            .send(Cmd::Open { device, warm, reply: rtx })
+            .map_err(|e| e.to_string())
+            .and_then(|_| {
+                rrx.recv_timeout(Duration::from_secs(5))
+                    .map_err(|_| "The microphone didn't respond. Check it's connected, or pick another one in Settings.".to_string())?
+            });
+        let format = match opened {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = self.shared.active.compare_exchange(id, 0, Ordering::SeqCst, Ordering::SeqCst);
+                return Err(e);
+            }
+        };
         *self.format.lock() = Some(format);
         let pre: Chunk = self.shared.preroll.lock().drain(..).collect();
         *self.shared.error.lock() = None;
         let mut guard = self.shared.sink.lock();
-        *guard = Some(sink);
-        let id = self.session.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        if self.shared.active.load(Ordering::SeqCst) == id {
+            *guard = Some(sink);
+        }
         drop(guard);
         Ok((format, pre, id))
     }
 
-    /// Stops delivering audio to session `id` (ignored if a newer session has started).
-    /// The stream stays open if "keep microphone ready" is on.
+    /// Stops delivering audio to session `id`. Does nothing if a newer session has taken the
+    /// microphone since. The stream stays open if "keep microphone ready" is on.
     pub fn stop(&self, id: u64) {
         let mut guard = self.shared.sink.lock();
-        if self.session.load(std::sync::atomic::Ordering::SeqCst) != id {
+        if self.shared.active.compare_exchange(id, 0, Ordering::SeqCst, Ordering::SeqCst).is_err() {
             return;
         }
         *guard = None;
         drop(guard);
-        let _ = self.cmd.send(Cmd::Close { force: false });
+        let _ = self.cmd.send(Cmd::Release);
     }
 
-    /// Closes the stream even in warm mode (settings changed, app exiting).
-    pub fn close(&self) {
+    /// Settings changed (microphone or "keep microphone ready"): close the stream now if it's
+    /// free, otherwise as soon as the current recording ends. Never cuts a recording short.
+    pub fn close_when_free(&self) {
+        let _ = self.cmd.send(Cmd::CloseWhenFree);
+    }
+
+    /// Closes the stream immediately, even mid-recording (app exiting).
+    #[allow(dead_code)]
+    pub fn close_now(&self) {
         *self.shared.sink.lock() = None;
-        let _ = self.cmd.send(Cmd::Close { force: true });
+        self.shared.active.store(0, Ordering::SeqCst);
+        let _ = self.cmd.send(Cmd::CloseNow);
     }
 
     pub fn take_error(&self) -> Option<String> {
@@ -134,7 +171,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>) {
         match cmd {
             Cmd::Open { device, warm: want_warm, reply } => {
                 warm = want_warm;
-                let broken = shared.broken.swap(false, std::sync::atomic::Ordering::SeqCst);
+                let broken = shared.broken.swap(false, Ordering::SeqCst);
                 if let Some((_, open_dev, fmt)) = &stream {
                     if *open_dev == device && !broken {
                         let _ = reply.send(Ok(*fmt));
@@ -153,11 +190,27 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>) {
                     }
                 }
             }
-            Cmd::Close { force } => {
-                if force || !warm {
+            Cmd::Release => {
+                // A newer session already owns the microphone: leave it open.
+                if shared.active.load(Ordering::SeqCst) != 0 {
+                    continue;
+                }
+                if shared.close_when_released.swap(false, Ordering::SeqCst) || !warm {
                     stream = None;
                     shared.preroll.lock().clear();
                 }
+            }
+            Cmd::CloseWhenFree => {
+                if shared.active.load(Ordering::SeqCst) != 0 {
+                    shared.close_when_released.store(true, Ordering::SeqCst);
+                } else {
+                    stream = None;
+                    shared.preroll.lock().clear();
+                }
+            }
+            Cmd::CloseNow => {
+                stream = None;
+                shared.preroll.lock().clear();
             }
         }
     }
@@ -173,7 +226,7 @@ fn open(host: &cpal::Host, device: Option<&str>, shared: Arc<Shared>) -> Result<
     let on_error = move |e: cpal::Error| {
         tracing::warn!("microphone stream error: {e}");
         if !matches!(e.kind(), cpal::ErrorKind::Xrun | cpal::ErrorKind::RealtimeDenied) {
-            err_shared.broken.store(true, std::sync::atomic::Ordering::SeqCst);
+            err_shared.broken.store(true, Ordering::SeqCst);
         }
         *err_shared.error.lock() = Some(e.to_string());
     };

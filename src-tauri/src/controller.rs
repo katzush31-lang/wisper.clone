@@ -101,6 +101,8 @@ pub struct Controller {
     single_tap_hints: AtomicU64,
     dictations_since_suggest: AtomicU64,
     next_token: AtomicU64,
+    /// The microphone session of a running Settings mic test.
+    pub mic_test: Mutex<Option<u64>>,
 }
 
 const UNDO_WINDOW: Duration = Duration::from_secs(2 * 60);
@@ -127,11 +129,16 @@ impl Controller {
             single_tap_hints: AtomicU64::new(0),
             dictations_since_suggest: AtomicU64::new(0),
             next_token: AtomicU64::new(1),
+            mic_test: Mutex::new(None),
         })
     }
 
-    fn settings(&self) -> Settings {
+    pub fn settings(&self) -> Settings {
         self.engine.settings()
+    }
+
+    pub fn is_recording(&self) -> bool {
+        matches!(*self.phase.lock(), Phase::Recording(_))
     }
 
     fn hotkey_label(&self) -> String {
@@ -375,7 +382,10 @@ impl Controller {
                 self.hook.engine.lock().reset_recording();
                 self.finish();
             }
-            Some(Target::App) => {}
+            Some(Target::App) => {
+                let hint = format!("Finish it with {} first, then dictate into the Scratchpad.", self.hotkey_label());
+                self.show_bar(self.bar("notice").msg("You're already dictating").detail(hint), Some(Duration::from_secs(3)));
+            }
             None => self.begin(RecordingKind::Dictation, true, Target::Scratchpad),
         }
     }
@@ -475,6 +485,9 @@ impl Controller {
             let _ = rec.tx.send(RecMsg::Finish(reply_tx));
             let Ok(mut finished) = reply_rx.recv_timeout(Duration::from_secs(10)) else {
                 me.done_processing(token);
+                if cancelled.load(Ordering::SeqCst) {
+                    return;
+                }
                 me.show_bar(me.bar("error").msg("Recording didn't finish properly").detail("The audio is saved in History.").actions(&["history"]), Some(Duration::from_secs(8)));
                 return;
             };
@@ -498,7 +511,14 @@ impl Controller {
                     }
                 }
             }
-            if finished.kind == RecordingKind::Command && finished.ctx.selection.is_none() && rec.target == Target::App && !is_terminal(&rec.app.exe) {
+            // Fall back to Ctrl+C for the selection, unless the user pressed Esc meanwhile (they
+            // may already be dictating elsewhere, so don't move focus or touch the clipboard).
+            if finished.kind == RecordingKind::Command
+                && finished.ctx.selection.is_none()
+                && rec.target == Target::App
+                && !is_terminal(&rec.app.exe)
+                && !cancelled.load(Ordering::SeqCst)
+            {
                 platform::refocus(rec.hwnd);
                 finished.ctx.selection = platform::copy_selection_via_clipboard();
             }
@@ -932,7 +952,8 @@ impl Controller {
         let hwnd = platform::foreground_window();
         let (exe, title) = platform::foreground_app();
         let app_info = apps::identify(&exe, &title);
-        self.show_bar(self.bar("processing").msg(format!("{}…", t.name)), None);
+        let progress = self.bar("processing").msg(format!("{}…", t.name));
+        self.show_bar(progress.clone(), None);
         let ctx = platform::read_context(700);
         let selection = ctx
             .selection
@@ -944,7 +965,15 @@ impl Controller {
         };
         let cancelled = Arc::new(AtomicBool::new(false));
         let token = self.next_token.fetch_add(1, Ordering::SeqCst);
-        *self.phase.lock() = Phase::Processing { cancelled: cancelled.clone(), token };
+        {
+            let mut phase = self.phase.lock();
+            // A dictation started while the selection was being read: leave it alone.
+            if !matches!(*phase, Phase::Idle) {
+                return;
+            }
+            *phase = Phase::Processing { cancelled: cancelled.clone(), token };
+        }
+        *self.last_progress.lock() = Some(progress);
         self.hook.engine.lock().set_processing(true);
         let me = self.clone();
         tauri::async_runtime::spawn(async move {

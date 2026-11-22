@@ -76,7 +76,8 @@ pub fn apply_settings(app: &AppHandle, s: &Settings) {
         let _ = if s.launch_at_login { al.enable() } else { al.disable() };
     }
     if old.keep_mic_warm != s.keep_mic_warm || old.microphone != s.microphone {
-        c.capture.close();
+        // Takes effect after any recording in progress, never in the middle of it.
+        c.capture.close_when_free();
     }
     let _ = app.emit("settings-changed", s);
     c.rest_bar();
@@ -460,6 +461,13 @@ pub async fn start_mic_test(app: AppHandle, device_id: Option<String>) -> Res<()
 
 fn start_mic_test_blocking(app: AppHandle, device_id: Option<String>) -> Res<()> {
     let c = ctl(&app);
+    if c.is_recording() {
+        return Err("Finish your dictation first, then test the microphone.".into());
+    }
+    let old = c.mic_test.lock().take();
+    if let Some(old) = old {
+        c.capture.stop(old);
+    }
     let app2 = app.clone();
     let mut meter = wisper_core::audio::level::LevelMeter::default();
     let mut last = std::time::Instant::now();
@@ -470,13 +478,20 @@ fn start_mic_test_blocking(app: AppHandle, device_id: Option<String>) -> Res<()>
             let _ = app2.emit_to("main", "mic-level", level);
         }
     });
-    c.capture.close();
-    c.capture.start(device_id, false, sink).map(|_| ())
+    let warm = c.settings().keep_mic_warm;
+    let (_, _, id) = c.capture.start(device_id, warm, sink)?;
+    *c.mic_test.lock() = Some(id);
+    Ok(())
 }
 
+/// Stops only the test's own microphone session, so it can never cut off a dictation.
 #[tauri::command]
 pub fn stop_mic_test(app: AppHandle) {
-    ctl(&app).capture.close();
+    let c = ctl(&app);
+    let id = c.mic_test.lock().take();
+    if let Some(id) = id {
+        c.capture.stop(id);
+    }
 }
 
 #[tauri::command]

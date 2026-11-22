@@ -163,9 +163,10 @@ pub fn detect_spoken_switch(text: &str, modes: &[Mode]) -> Option<(String, Strin
     let as_form = format!(
         r"(?is){lead}(?:as|format (?:it|this) as|write (?:it|this) as|make (?:it|this))\s+(?:an?\s+|the\s+)?({alternatives})(?:\s+(?:mode|format|style))?\s*[,.:;!\-\u{{2014}}](?P<rest>.*)$"
     );
-    // "In list mode, …" / "Use casual style …": the lead-in word makes it unambiguous.
+    // "In list mode, …" / "Use casual style. …": punctuation (a spoken pause) must follow, so
+    // "Use list format for the agenda" stays a sentence.
     let lead_in_form = format!(
-        r"(?is){lead}(?:in|use|using)\s+(?:an?\s+|the\s+)?({alternatives})\s+(?:mode|format|style)\b[,.:;!\-\u{{2014}}]?(?P<rest>.*)$"
+        r"(?is){lead}(?:in|use|using)\s+(?:an?\s+|the\s+)?({alternatives})\s+(?:mode|format|style)\s*[,.:;!\-\u{{2014}}](?P<rest>.*)$"
     );
     // "Email mode: …" / "List mode. …": without a lead-in word, punctuation must follow, so
     // "Formal style is preferred in court" stays a sentence.
@@ -256,6 +257,9 @@ mod tests {
             "Message mode is broken",
             "List mode would be nice to have",
             "Make it a list of everything we need",
+            "Using email format is weird today",
+            "Use list format for the agenda",
+            "In casual style we'd just say hi",
         ] {
             assert_eq!(detect_spoken_switch(s, &m), None, "{s}");
         }

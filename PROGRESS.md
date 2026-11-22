@@ -5,7 +5,7 @@
 | 2026-11-22 | Planning | Research, plan (`docs/PLAN.md`) approved. Repo made public; updater signing secret added. |
 | 2026-11-22 | 0 Foundations | Done. CI builds + publishes installer on every push to `main` (v0.1.2 first release). |
 | 2026-11-22 | 1–5 (built together) | Core engine, Windows layer, all UI pages built and visually checked. |
-| 2026-11-22 | Review rounds | Independent reviewer (Opus) — round 1: 5 must-fix + 12 should-fix, all addressed (d2bbb37, 754355c); round 2: 2 partial + 10 new, addressed (ba018a9); round 3 in progress. Releases v0.1.3–v0.1.6. |
+| 2026-11-22 | Review rounds | Independent reviewer (Opus) — round 1: 5 must-fix + 12 should-fix, all addressed (d2bbb37, 754355c); round 2: 2 partial + 10 new, addressed (ba018a9); round 3: **signed off**, plus six low-priority notes fixed (microphone sessions can no longer be closed by an old stop, a settings change or the mic test; Esc during a voice command never touches another window). Releases v0.1.3 onwards. |
 
 ## What exists
 - **Core (`crates/core`)**: hotkey gestures, audio DSP (resample, VAD, pause-based segments, FLAC, crash-safe PCM), Hebrew/Yiddish starter dictionary, dictionary/suggestions, snippets, modes + spoken switch, prompts, OpenAI/Claude providers with retry, SQLite history/stats, pipeline (transcribe while recording, cleanup with fallback, offline queue, crash recovery, retention), sounds.
