@@ -22,6 +22,8 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
   const [openId, setOpenId] = useState<string | null>(null);
   const count = useRef(PAGE);
   const queryRef = useRef("");
+  const [date, setDate] = useState("");
+  const dateRef = useRef("");
 
   const loadStats = useCallback(() => {
     api.getStats().then(setStats).catch(() => {});
@@ -30,8 +32,15 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
   const loadItems = useCallback(() => {
     const text = queryRef.current.trim();
     const limit = count.current;
+    const day = dateRef.current;
+    let range = {};
+    if (day) {
+      const [y, m, d] = day.split("-").map(Number);
+      const from = new Date(y, m - 1, d).getTime();
+      range = { from, to: from + 86_400_000 - 1 };
+    }
     api
-      .listHistory({ limit: limit + 1, ...(text ? { text } : {}) })
+      .listHistory({ limit: limit + 1, ...(text ? { text } : {}), ...range })
       .then((rows) => {
         setHasMore(rows.length > limit);
         setItems(rows.slice(0, limit));
@@ -117,15 +126,30 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
       <div className="home-hist-head">
         <div className="section-label">History</div>
         {searching ? (
-          <SearchBox
-            value={query}
-            onChange={(v) => {
-              setQuery(v);
-              if (!v) setSearching(false);
-            }}
-            placeholder="Search your dictations"
-            autoFocus
-          />
+          <div className="home-search">
+            <SearchBox
+              value={query}
+              onChange={(v) => {
+                setQuery(v);
+                if (!v && !date) setSearching(false);
+              }}
+              placeholder="Search your dictations"
+              autoFocus
+            />
+            <input
+              type="date"
+              className="input home-date"
+              aria-label="Show one day"
+              title="Show one day"
+              value={date}
+              onChange={(e) => {
+                setDate(e.target.value);
+                dateRef.current = e.target.value;
+                count.current = PAGE;
+                loadItems();
+              }}
+            />
+          </div>
         ) : (
           <button className="icon-btn" aria-label="Search" onClick={() => setSearching(true)}>
             <Search size={17} />

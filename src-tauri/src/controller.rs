@@ -505,6 +505,7 @@ impl Controller {
                     self.show_bar(st, Some(Duration::from_millis(3500)));
                 }
                 self.maybe_suggest();
+                self.sync_learned_style(app);
             }
             InsertOutcome::NoTextField => {
                 *self.last.lock() = Some(LastResult {
@@ -821,6 +822,28 @@ impl Controller {
 
     // ------------------------------------------------------------------ background work
 
+    /// When Wisper has learned a mode for an app (you picked it there several times), show it
+    /// on the Style page as a learned per-app style you can change.
+    fn sync_learned_style(self: &Arc<Self>, app: &AppInfo) {
+        let mut s = self.settings();
+        if app.key.is_empty() || !s.learn_app_styles {
+            return;
+        }
+        let Ok(Some(mode)) = self.engine.db.learned_mode(&app.key, 3) else { return };
+        if let Some(existing) = s.app_styles.iter_mut().find(|a| a.app_key == app.key) {
+            if existing.user_set || existing.mode_id == mode {
+                return;
+            }
+            existing.mode_id = mode;
+        } else {
+            s.app_styles.push(wisper_core::settings::AppStyle { app_key: app.key.clone(), app_name: app.name.clone(), mode_id: mode, user_set: false });
+        }
+        let path = self.data_dir.join("settings.json");
+        if s.save(&path).is_ok() {
+            crate::commands::apply_settings(&self.app, &s);
+        }
+    }
+
     fn maybe_suggest(self: &Arc<Self>) {
         if self.dictations_since_suggest.fetch_add(1, Ordering::SeqCst) % 10 != 9 {
             return;
@@ -863,7 +886,10 @@ impl Controller {
                         );
                     }
                 }
-                tokio::time::sleep(Duration::from_secs(60)).await;
+                // Check more often while something is waiting, so it's done soon after the
+                // connection comes back.
+                let still_waiting = me.engine.db.unfinished().map(|v| !v.is_empty()).unwrap_or(false);
+                tokio::time::sleep(Duration::from_secs(if still_waiting { 20 } else { 60 })).await;
             }
         });
         let me = self.clone();

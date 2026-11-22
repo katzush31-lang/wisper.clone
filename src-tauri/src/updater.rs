@@ -46,6 +46,15 @@ pub async fn check_and_prepare(app: &AppHandle, user_initiated: bool) -> anyhow:
     let version = update.version.clone();
     tracing::info!("update {version} available, downloading");
     let bytes = update.download(|_, _| {}, || {}).await?;
+    if !user_initiated {
+        let c = crate::controller::ControllerState::get(app);
+        if c.engine.settings().notifications.update_ready {
+            c.notify(
+                "Wisper update ready",
+                &format!("Version {version} will install in a moment, when you're not dictating. Wisper restarts by itself."),
+            );
+        }
+    }
     // Wait until no dictation is running (checked every few seconds).
     while BUSY.load(Ordering::SeqCst) {
         tokio::time::sleep(Duration::from_secs(5)).await;

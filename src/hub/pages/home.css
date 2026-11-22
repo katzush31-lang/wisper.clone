@@ -179,3 +179,14 @@
     grid-template-columns: 1fr;
   }
 }
+
+.home-search {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.home-date {
+  width: 150px;
+  height: 36px;
+  padding: 4px 10px;
+}
