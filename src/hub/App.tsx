@@ -12,6 +12,7 @@ import SettingsModal from "./settings/SettingsModal";
 import { api, events, type Settings } from "../shared/api";
 import { openUrl } from "../shared/tauri";
 import { SettingsContext } from "./useSettings";
+import { ToastProvider } from "./components";
 
 function applyTheme(theme: Settings["theme"] | undefined) {
   const dark =
@@ -80,6 +81,7 @@ export default function App() {
 
   return (
     <SettingsContext.Provider value={{ settings, update }}>
+      <ToastProvider>
       <div className="app">
         <TitleBar dark={dark} onToggleTheme={toggleTheme} onToggleSidebar={() => setSidebar((s) => !s)} />
         <div className="app-body">
@@ -99,6 +101,7 @@ export default function App() {
           onClose={() => setSettingsOpen(null)}
         />
       </div>
+      </ToastProvider>
     </SettingsContext.Provider>
   );
 }
