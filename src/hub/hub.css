@@ -1,0 +1,230 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--frame);
+}
+.titlebar {
+  height: 44px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6px 0 10px;
+}
+.titlebar-left,
+.titlebar-right {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.titlebar-gap {
+  width: 14px;
+}
+.win-btn {
+  width: 42px;
+  border-radius: 6px;
+}
+.win-close:hover {
+  background: #e81123;
+  color: #fff;
+}
+.app-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  padding: 0 10px 10px 0;
+}
+.sidebar {
+  width: 216px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 12px 6px 18px;
+  transition: width 0.18s ease, padding 0.18s ease, opacity 0.18s ease;
+}
+.sidebar.collapsed {
+  width: 0;
+  padding: 0;
+  opacity: 0;
+  overflow: hidden;
+}
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 21px;
+  letter-spacing: -0.02em;
+  padding: 4px 4px 22px;
+}
+.nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 38px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  font-size: 14.5px;
+  font-weight: 500;
+  text-align: left;
+  color: var(--text);
+}
+.nav-item:hover {
+  background: var(--row-hover);
+}
+.nav-item.active {
+  background: var(--nav-active);
+}
+.sidebar-spacer {
+  flex: 1;
+}
+.nav-bottom {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+  margin-top: 10px;
+}
+.content {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.page {
+  flex: 1;
+  padding: 44px 48px 48px;
+}
+.page-narrow {
+  max-width: 860px;
+  margin: 0 auto;
+}
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 28px;
+}
+.page-title {
+  font-size: 27px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+.tabs {
+  display: flex;
+  gap: 26px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 22px;
+}
+.tab {
+  border: none;
+  background: none;
+  padding: 8px 0 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.tab.active {
+  color: var(--text);
+  border-bottom-color: var(--text);
+}
+.card {
+  background: var(--card);
+  border-radius: var(--radius-md);
+  padding: 22px;
+}
+.list {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.list-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--line);
+}
+.list-row:first-child {
+  border-top: none;
+}
+.list-row:hover {
+  background: var(--row-hover);
+}
+.empty {
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--text-muted);
+}
+.hero {
+  position: relative;
+  border-radius: var(--radius-lg);
+  padding: 34px 34px 30px;
+  color: #fff;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 80% 20%, rgba(127, 194, 184, 0.55), transparent 45%),
+    radial-gradient(circle at 15% 85%, rgba(245, 163, 59, 0.35), transparent 45%),
+    linear-gradient(120deg, #1d3d42 0%, #2c4f4b 45%, #3b3226 100%);
+}
+.hero h2 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 34px;
+  margin: 0 0 8px;
+  letter-spacing: -0.01em;
+}
+.hero p {
+  margin: 0 0 22px;
+  max-width: 420px;
+  opacity: 0.92;
+}
+.hero .btn-light {
+  background: #f6f4ee;
+  color: #1b1b1a;
+}
+.section-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.toast {
+  position: fixed;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--button-dark);
+  color: var(--button-dark-text);
+  padding: 10px 18px;
+  border-radius: 10px;
+  font-weight: 500;
+  box-shadow: var(--shadow);
+  z-index: 100;
+}
+.sidebar-wrap {
+  display: flex;
+  transition: width 0.18s ease;
+}
+.sidebar-wrap.collapsed {
+  width: 10px;
+  overflow: hidden;
+}
+.sidebar-wrap.collapsed .sidebar {
+  display: none;
+}

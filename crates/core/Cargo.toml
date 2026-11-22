@@ -1,0 +1,28 @@
+[package]
+name = "wisper-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Platform-independent logic for Wisper: pipeline, providers, prompts, history, dictionary."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+async-trait.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "rustls", "stream"] }
+rusqlite = { version = "0.38", features = ["bundled"] }
+regex = "1"
+flacenc = "0.5"
+hound = "3.5"
+strsim = "0.11"
+base64 = "0.22"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"

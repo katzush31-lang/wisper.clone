@@ -1,0 +1,57 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Wisper",
+  "version": "0.1.0",
+  "identifier": "app.wisper.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Wisper",
+        "url": "index.html",
+        "width": 1180,
+        "height": 800,
+        "minWidth": 940,
+        "minHeight": 620,
+        "visible": false,
+        "center": true,
+        "decorations": false,
+        "shadow": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: blob:; media-src 'self' asset: http://asset.localhost blob: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost",
+      "assetProtocol": { "enable": true, "scope": ["$APPDATA/**", "$APPLOCALDATA/**"] }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
+    "publisher": "Wisper",
+    "shortDescription": "Voice dictation for Windows",
+    "longDescription": "Hold a key, speak, and polished text appears wherever your cursor is.",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "windows": {
+      "webviewInstallMode": { "type": "embedBootstrapper" },
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg3RjQ4NkJCRTBDQUIyRkYKUldUL3Nzcmd1NGIwaDBMSHFDYURrNWp5d0lGUGdUdy9NcVU1TGdzc1FaUHUvWkhFc3kzUHMrencK",
+      "endpoints": ["https://github.com/katzush31-lang/wisper.clone/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
+  }
+}

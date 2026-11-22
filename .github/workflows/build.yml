@@ -1,0 +1,91 @@
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test -- --passWithNoTests
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: core-linux
+      - run: cargo test -p wisper-core --locked
+
+  windows:
+    name: Windows installer
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: app-windows
+      - name: Set version
+        shell: bash
+        run: |
+          VERSION="0.1.${{ github.run_number }}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          node scripts/set-version.mjs "$VERSION"
+      - name: Windows tests
+        run: cargo test --workspace --locked
+      - name: Build installer
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            npx tauri build
+          else
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY secret is not set; building without auto-update support"
+            npx tauri build --config src-tauri/tauri.no-updater.conf.json
+          fi
+      - name: Collect installer
+        shell: bash
+        run: node scripts/collect-release.mjs "$VERSION" "${{ github.repository }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Wisper-${{ env.VERSION }}-installer
+          path: release/
+          retention-days: 14
+      - name: Publish GitHub release
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$VERSION" release/* \
+            --title "Wisper $VERSION" \
+            --target "${{ github.sha }}" \
+            --generate-notes \
+            --latest
