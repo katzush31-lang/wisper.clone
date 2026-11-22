@@ -67,6 +67,18 @@ pub fn apply_settings(app: &AppHandle, s: &Settings) {
                 .collect(),
         );
     }
+    // "Shortcuts enabled" switch: the hook keeps running but ignores every shortcut.
+    let disabled = !s.shortcuts_enabled;
+    c.hook.paused.store(disabled, Ordering::SeqCst);
+    if disabled {
+        if c.is_recording() {
+            c.cancel(wisper_core::hotkey::CancelReason::OtherShortcut);
+        }
+        let mut e = c.hook.engine.lock();
+        e.reset_recording();
+        e.clear_pressed();
+    }
+    crate::tray::sync_shortcuts(app, s.shortcuts_enabled);
     let uses_mouse = all_combos(s).iter().any(|c| c.keys.iter().any(|k| matches!(*k, 0x04..=0x06)));
     if c.hook.mouse_enabled.swap(uses_mouse, Ordering::SeqCst) != uses_mouse {
         platform::refresh_hooks();

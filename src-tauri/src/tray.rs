@@ -2,8 +2,21 @@
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter,
+    AppHandle, Emitter, Manager,
 };
+
+/// The tray's "Pause shortcuts" checkbox, kept so settings changes can update it.
+struct PauseItem(CheckMenuItem<tauri::Wry>);
+
+/// Makes the tray checkbox and tooltip match the saved "Shortcuts enabled" setting.
+pub fn sync_shortcuts(app: &AppHandle, enabled: bool) {
+    if let Some(item) = app.try_state::<PauseItem>() {
+        let _ = item.0.set_checked(!enabled);
+    }
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_tooltip(Some(if enabled { "Wisper" } else { "Wisper (shortcuts off)" }));
+    }
+}
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Wisper", true, None::<&str>)?;
@@ -15,7 +28,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let sep = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(app, &[&open, &paste, &scratch, &sep, &pause, &update, &sep2, &quit])?;
-    let pause_item = pause.clone();
+    app.manage(PauseItem(pause.clone()));
 
     let icon = app
         .default_window_icon()
@@ -42,12 +55,15 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
                 let _ = app.emit_to("main", "navigate", "scratchpad");
             }
             "pause" => {
+                // Flip the saved setting, the same way the Settings page does.
                 let c = crate::controller::ControllerState::get(app);
-                let now_paused = !c.hook.paused.load(std::sync::atomic::Ordering::SeqCst);
-                c.hook.paused.store(now_paused, std::sync::atomic::Ordering::SeqCst);
-                let _ = pause_item.set_checked(now_paused);
-                if let Some(tray) = app.tray_by_id("main") {
-                    let _ = tray.set_tooltip(Some(if now_paused { "Wisper (shortcuts paused)" } else { "Wisper" }));
+                let mut settings = c.engine.settings();
+                settings.shortcuts_enabled = !settings.shortcuts_enabled;
+                let paths = app.state::<crate::commands::Paths>();
+                match settings.save(&paths.settings_file) {
+                    Ok(()) => crate::commands::apply_settings(app, &settings),
+                    // Couldn't save: put the checkbox back to match reality.
+                    Err(_) => sync_shortcuts(app, c.engine.settings().shortcuts_enabled),
                 }
             }
             "update" => {

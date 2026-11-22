@@ -168,6 +168,8 @@ pub struct Settings {
     pub user_name: String,
     pub onboarded: bool,
     pub hotkeys: HotkeyConfig,
+    /// Master switch: when false, Wisper ignores all its keyboard/mouse shortcuts.
+    pub shortcuts_enabled: bool,
     /// Microphone id; None = Windows default.
     pub microphone: Option<String>,
     /// Keep the microphone open in the background so the very first syllable is captured.
@@ -212,6 +214,7 @@ impl Default for Settings {
             user_name: String::new(),
             onboarded: false,
             hotkeys: HotkeyConfig::defaults(),
+            shortcuts_enabled: true,
             microphone: None,
             keep_mic_warm: false,
             languages: vec!["en".into()],
@@ -313,6 +316,20 @@ mod tests {
         assert!(s.sounds.enabled);
         assert_eq!(s.default_mode, "auto");
         assert!(!s.hotkeys.dictate.is_empty());
+    }
+
+    #[test]
+    fn shortcuts_enabled_defaults_on_and_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        // Old files without the field load as enabled.
+        std::fs::write(&p, r#"{"userName":"X"}"#).unwrap();
+        assert!(Settings::load(&p).shortcuts_enabled);
+        let mut s = Settings::default();
+        assert!(s.shortcuts_enabled);
+        s.shortcuts_enabled = false;
+        s.save(&p).unwrap();
+        assert!(!Settings::load(&p).shortcuts_enabled);
     }
 
     #[test]

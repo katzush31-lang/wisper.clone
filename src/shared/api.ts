@@ -55,6 +55,7 @@ export interface Settings {
   userName: string;
   onboarded: boolean;
   hotkeys: HotkeyConfig;
+  shortcutsEnabled: boolean;
   microphone: string | null;
   keepMicWarm: boolean;
   /** ISO codes; empty array = auto-detect */

@@ -60,5 +60,7 @@ Tick these off after installing. If something doesn't behave as described, note 
 - [ ] Dark theme (moon icon, top right) looks right.
 - [ ] Dictionary: scroll down through the whole list (all three tabs).
 - [ ] Settings → Shortcuts: click the keys (or Change), press a new combination, let go, Save. Try the new shortcut.
+- [ ] Settings → Shortcuts → turn "Shortcuts enabled" off, then press Ctrl + Win: nothing happens (no sound, no bar, no recording). Turn it back on: dictation works again.
+- [ ] Tray icon → "Pause shortcuts" stays in sync with the "Shortcuts enabled" setting (either one changes the other), and the choice is remembered after restarting Wisper.
 - [ ] Turn on the always-visible bar: you can click and hover on things right next to it; only the small pill itself responds.
 - [ ] Settings → Backup & account → Export backup, then Restore from it.

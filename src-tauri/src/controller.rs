@@ -1108,7 +1108,12 @@ impl Controller {
                 let mut last_sync = Instant::now();
                 loop {
                     match rx.recv_timeout(Duration::from_millis(25)) {
-                        Ok(platform::HookEvent::Action(a)) => me.on_action(a),
+                        // Shortcuts switched off: queued shortcut actions are dropped.
+                        Ok(platform::HookEvent::Action(a)) => {
+                            if !me.hook.paused.load(Ordering::SeqCst) {
+                                me.on_action(a)
+                            }
+                        }
                         Ok(platform::HookEvent::Captured { keys, done }) => {
                             let label = wisper_core::hotkey::KeyCombo::new(&keys).label();
                             let _ = me.app.emit_to("main", "hotkey-captured", serde_json::json!({ "keys": keys, "label": label, "done": done }));
@@ -1125,8 +1130,10 @@ impl Controller {
                             Vec::new()
                         }
                     };
-                    for a in actions {
-                        me.on_action(a);
+                    if !me.hook.paused.load(Ordering::SeqCst) {
+                        for a in actions {
+                            me.on_action(a);
+                        }
                     }
                     if last_sync.elapsed() > Duration::from_secs(2) {
                         last_sync = Instant::now();

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, comboLabel, events, type HotkeyConfig, type KeyCombo } from "../../shared/api";
-import { ConfirmDialog, Modal, SettingGroup, SettingRow, errorText, useToast } from "../components";
+import { ConfirmDialog, Modal, SettingGroup, SettingRow, Switch, errorText, useToast } from "../components";
 import { DEFAULT_HOTKEYS, HOTKEY_ACTIONS, setCombo } from "./helpers";
 import { useSaver, type SectionProps } from "./GeneralSection";
 
@@ -177,6 +177,15 @@ export default function ShortcutsSection({ settings, update, onBusy }: SectionPr
       <p className="section-intro">
         Hold to talk, release to paste. Double-tap to keep recording hands-free; tap again to finish. Esc cancels.
       </p>
+      <SettingGroup>
+        <SettingRow
+          title="Shortcuts enabled"
+          description="Turn off to make Wisper ignore all its keyboard shortcuts until you turn them back on. You can also do this from the tray icon."
+        >
+          <Switch label="Shortcuts enabled" checked={settings.shortcutsEnabled} onChange={(v) => save({ ...settings, shortcutsEnabled: v })} />
+        </SettingRow>
+      </SettingGroup>
+      {!settings.shortcutsEnabled && <p className="muted section-note">Shortcuts are switched off, so pressing them does nothing. You can still change them below.</p>}
       <SettingGroup>
         {HOTKEY_ACTIONS.map((a) => (
           <SettingRow key={a.id} title={a.title} description={a.description}>
