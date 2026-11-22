@@ -448,12 +448,16 @@ pub async fn list_models(app: AppHandle, list: String) -> Vec<ModelInfo> {
 // ---------------------------------------------------------------- microphone & hotkeys
 
 #[tauri::command]
-pub fn list_microphones() -> Vec<crate::audio_capture::Microphone> {
-    crate::audio_capture::list_microphones()
+pub async fn list_microphones() -> Vec<crate::audio_capture::Microphone> {
+    tauri::async_runtime::spawn_blocking(crate::audio_capture::list_microphones).await.unwrap_or_default()
 }
 
 #[tauri::command]
-pub fn start_mic_test(app: AppHandle, device_id: Option<String>) -> Res<()> {
+pub async fn start_mic_test(app: AppHandle, device_id: Option<String>) -> Res<()> {
+    tauri::async_runtime::spawn_blocking(move || start_mic_test_blocking(app, device_id)).await.map_err(|e| e.to_string())?
+}
+
+fn start_mic_test_blocking(app: AppHandle, device_id: Option<String>) -> Res<()> {
     let c = ctl(&app);
     let app2 = app.clone();
     let mut meter = wisper_core::audio::level::LevelMeter::default();
@@ -516,12 +520,14 @@ pub fn delete_note(app: AppHandle, id: i64) -> Res<()> {
 #[tauri::command]
 pub fn dictate_into_scratchpad(app: AppHandle) {
     let c = ctl(&app);
-    if c.hook.engine.lock().is_recording() {
-        c.finish();
-    } else {
-        // Mark the gesture engine as recording hands-free so Esc and the hotkey can stop it.
-        c.begin(wisper_core::hotkey::RecordingKind::Dictation, true, Target::Scratchpad);
-    }
+    std::thread::spawn(move || {
+        if c.hook.engine.lock().is_recording() {
+            c.hook.engine.lock().reset_recording();
+            c.finish();
+        } else {
+            c.begin(wisper_core::hotkey::RecordingKind::Dictation, true, Target::Scratchpad);
+        }
+    });
 }
 
 #[tauri::command]
@@ -540,7 +546,8 @@ pub fn run_transform(app: AppHandle, id: String) {
 
 #[tauri::command]
 pub fn bar_start(app: AppHandle) {
-    ctl(&app).begin(wisper_core::hotkey::RecordingKind::Dictation, true, Target::App);
+    let c = ctl(&app);
+    std::thread::spawn(move || c.begin(wisper_core::hotkey::RecordingKind::Dictation, true, Target::App));
 }
 
 #[tauri::command]
@@ -593,12 +600,14 @@ pub fn bar_dismiss(app: AppHandle) {
 
 // ---------------------------------------------------------------- backup
 
+// File dialogs block until closed, so these must never run on the UI thread.
 #[tauri::command]
-pub fn export_backup(app: AppHandle) -> Res<String> {
-    crate::backup::export(&app)
+pub async fn export_backup(app: AppHandle) -> Res<String> {
+    tauri::async_runtime::spawn_blocking(move || crate::backup::export(&app)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn import_backup(app: AppHandle, paths: State<'_, Paths>) -> Res<String> {
-    crate::backup::import(&app, &paths.settings_file)
+pub async fn import_backup(app: AppHandle) -> Res<String> {
+    let file = app.state::<Paths>().settings_file.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::backup::import(&app, &file)).await.map_err(|e| e.to_string())?
 }
