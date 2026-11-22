@@ -22,6 +22,7 @@ flacenc = "0.5"
 hound = "3.5"
 strsim = "0.11"
 base64 = "0.22"
+claxon = "0.4"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

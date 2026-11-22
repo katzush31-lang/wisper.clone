@@ -32,11 +32,12 @@ pub struct SegmentConfig {
 impl Default for SegmentConfig {
     fn default() -> Self {
         Self {
-            pause_ms: 700,
-            min_len_ms: 10_000,
-            long_pause_ms: 1_400,
+            // Measured after the VAD's 300 ms hangover, so 450 ms here ≈ 0.75 s of real silence.
+            pause_ms: 450,
+            min_len_ms: 8_000,
+            long_pause_ms: 1_000,
             long_pause_min_len_ms: 4_000,
-            max_len_ms: 60_000,
+            max_len_ms: 45_000,
             forced_search_ms: 10_000,
             min_speech_ms: 160,
         }
@@ -216,7 +217,7 @@ mod tests {
         assert!(segs.len() >= 3);
         for s in &segs[..segs.len() - 1] {
             let len_ms = (s.end - s.start) as u64 * 1000 / 16_000;
-            assert!(len_ms <= 60_000, "segment {len_ms} ms");
+            assert!(len_ms <= 45_000, "segment {len_ms} ms");
         }
         // Segments tile the recording without gaps.
         for w in segs.windows(2) {

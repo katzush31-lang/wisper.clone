@@ -2,11 +2,13 @@
 
 pub mod apps;
 pub mod audio;
+pub mod db;
 pub mod common_words;
 pub mod dictionary;
 pub mod hebrew;
 pub mod hotkey;
 pub mod modes;
+pub mod pipeline;
 pub mod prompts;
 pub mod providers;
 pub mod settings;
