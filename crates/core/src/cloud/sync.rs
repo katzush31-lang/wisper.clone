@@ -16,10 +16,8 @@ use super::{hash_hex, now_ms, CloudError, CloudResult, KeyStore, PROVIDERS};
 use crate::db::Db;
 use crate::settings::{KeyStorage, RemoteSection, Settings, KEY_STORAGE_SECTION};
 
-/// Items changed on another computer long ago can still arrive late (it was offline), so each
-/// pull looks back this far. Re-reading old items is harmless: newest-wins ignores them.
-const ITEM_OVERLAP_MS: i64 = 30 * 24 * 3600 * 1000;
-/// Same idea for usage numbers, which are only ever added.
+/// A dictation that finishes late (it was queued offline) has an old `created_at`, so the upload
+/// looks back this far. The server ignores rows it already has; this run also remembers what it sent.
 const STATS_OVERLAP_MS: i64 = 3 * 24 * 3600 * 1000;
 
 const META_ACCOUNT: &str = "cloud_account";
@@ -136,12 +134,23 @@ impl SyncEngine {
     pub async fn complete_sign_in(&self, code: &str, verifier: &str, device_name: &str) -> CloudResult<AccountInfo> {
         let auth = self.client.exchange_code(code, verifier, device_name).await?;
         let UserInfo { id, email, name } = auth.user;
-        let info = AccountInfo { id: id.clone(), email, name, device_id: auth.device_id };
+        self.record_sign_in(AccountInfo { id, email, name, device_id: auth.device_id })
+    }
+
+    /// Test seam (used by the end-to-end contract test against the real Worker): treats a refresh
+    /// token already in the `TokenStore` as a finished sign-in. Asks the service who the token
+    /// belongs to (`/v1/me`), then records it exactly as `complete_sign_in` does.
+    pub async fn resume_sign_in(&self) -> CloudResult<AccountInfo> {
+        let (user, device_id) = self.client.me().await?;
+        self.record_sign_in(AccountInfo { id: user.id, email: user.email, name: user.name, device_id })
+    }
+
+    fn record_sign_in(&self, info: AccountInfo) -> CloudResult<AccountInfo> {
         // A different person than last time gets a fresh "first sign-in" merge (with backups).
-        if self.meta(META_USER).as_deref() != Some(id.as_str()) {
+        if self.meta(META_USER).as_deref() != Some(info.id.as_str()) {
             self.set_meta(META_MERGED, "0")?;
         }
-        self.set_meta(META_USER, &id)?;
+        self.set_meta(META_USER, &info.id)?;
         self.set_meta(META_ACCOUNT, &serde_json::to_string(&info).unwrap())?;
         self.set_meta(META_CHOSEN, "0")?;
         for c in CURSORS {
@@ -220,7 +229,8 @@ impl SyncEngine {
         report.stamped = plan.stamp;
 
         // 2. Dictionary and snippets: pull and merge, then push what changed here.
-        let pull_from = if first { 0 } else { (self.meta_i64("sync_items_pull") - ITEM_OVERLAP_MS).max(0) };
+        // Cursors are the server's own clock (`now` from its last reply), never ours.
+        let pull_from = if first { 0 } else { self.meta_i64("sync_items_pull") };
         let pulled = self.client.get_items(pull_from).await?;
         report.items_changed = self.db.apply_remote_items(&pulled.items).map_err(dberr)? > 0;
         let changed = self.db.items_changed_since(self.meta_i64("sync_items_push")).map_err(dberr)?;
@@ -285,14 +295,27 @@ impl SyncEngine {
             self.set_meta("sync_stats_push", &max.max(push_cursor).to_string())?;
         }
         // Download the other computers' numbers.
-        let pull_cursor = self.meta_i64("sync_stats_pull");
-        let from = if pull_cursor == 0 { 0 } else { (pull_cursor - STATS_OVERLAP_MS).max(0) };
-        let remote = self.client.get_stats(from).await?;
         let own = self.account().map(|a| a.device_id);
-        let others: Vec<_> = remote.iter().filter(|r| r.device_id.is_none() || r.device_id != own).cloned().collect();
-        let added = self.db.remote_stats_add(&others).map_err(dberr)?;
-        if let Some(max) = remote.iter().map(|r| r.created_at).max() {
-            self.set_meta("sync_stats_pull", &max.max(pull_cursor).to_string())?;
+        let mut from = self.meta_i64("sync_stats_pull");
+        let mut added = 0;
+        loop {
+            let page = self.client.get_stats(from).await?;
+            let others: Vec<_> = page.rows.iter().filter(|r| r.device_id.is_none() || r.device_id != own).cloned().collect();
+            added += self.db.remote_stats_add(&others).map_err(dberr)?;
+            let last = page.rows.last().and_then(|r| r.server_at);
+            match (page.more, last) {
+                // Cut short: continue from the last row we saw (guard against not moving forward).
+                (true, Some(t)) if t > from => {
+                    from = t;
+                    self.set_meta("sync_stats_pull", &from.to_string())?;
+                }
+                _ => {
+                    if page.now > 0 {
+                        self.set_meta("sync_stats_pull", &page.now.to_string())?;
+                    }
+                    break;
+                }
+            }
         }
         Ok(added > 0)
     }

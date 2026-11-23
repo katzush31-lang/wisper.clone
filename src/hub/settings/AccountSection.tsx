@@ -88,7 +88,16 @@ export default function AccountSection({ onDone }: { onDone?: () => void }) {
   };
 
   const setKeyStorage = (storage: KeyStorage) => {
-    if (!status || storage === status.keyStorage) return;
+    if (!status) return;
+    // First choice on this computer: nothing to remove yet, so no confirm needed.
+    if (status.keyStorageChosen === false) {
+      void act(
+        () => api.accountSetKeyStorage(storage),
+        storage === "cloud" ? "Your keys are now synced through your account" : "Your keys stay on this computer only",
+      );
+      return;
+    }
+    if (storage === status.keyStorage) return;
     if (storage === "local") setConfirm("keys-local");
     else void act(() => api.accountSetKeyStorage("cloud"), "Your keys are now synced through your account");
   };
@@ -148,6 +157,24 @@ export default function AccountSection({ onDone }: { onDone?: () => void }) {
             </SettingRow>
           </SettingGroup>
         </>
+      )}
+
+      {signedIn && status && status.keyStorageChosen === false && (
+        <div className="card account-choose" role="region" aria-label="Choose where to keep your API keys">
+          <strong>One last step: where should your API keys be kept?</strong>
+          <p className="muted">Nothing moves until you choose. You can change this later.</p>
+          <div className="account-choose-btns">
+            <button className="btn btn-dark" disabled={busy} onClick={() => setKeyStorage("cloud")}>
+              In my account (synced)
+            </button>
+            <button className="btn btn-soft" disabled={busy} onClick={() => setKeyStorage("local")}>
+              This computer only
+            </button>
+          </div>
+          <p className="muted account-choose-note">
+            {KEY_STORAGE_DESCRIPTIONS.cloud} {KEY_STORAGE_DESCRIPTIONS.local}
+          </p>
+        </div>
       )}
 
       {signedIn && status && (

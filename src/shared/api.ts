@@ -108,6 +108,8 @@ export interface AccountStatus {
   name?: string;
   deviceId?: string;
   keyStorage: KeyStorage;
+  /** false right after the first sign-in on this computer, until the user picks where keys live */
+  keyStorageChosen?: boolean;
   /** unix ms of the last successful sync */
   lastSync?: number;
   syncError?: string;
@@ -389,6 +391,10 @@ export const api = {
 export const events = {
   barState: (cb: (s: BarState) => void) => listen<BarState>("bar-state", (e) => cb(e.payload)),
   historyChanged: (cb: () => void) => listen<string>("history-changed", () => cb()),
+  /** API keys changed (e.g. synced from another computer) */
+  keysChanged: (cb: () => void) => listen<string>("keys-changed", () => cb()),
+  dictionaryChanged: (cb: () => void) => listen<string>("dictionary-changed", () => cb()),
+  snippetsChanged: (cb: () => void) => listen<string>("snippets-changed", () => cb()),
   settingsChanged: (cb: (s: Settings) => void) => listen<Settings>("settings-changed", (e) => cb(e.payload)),
   suggestionsChanged: (cb: () => void) => listen<null>("suggestions-changed", () => cb()),
   micLevel: (cb: (level: number) => void) => listen<number>("mic-level", (e) => cb(e.payload)),

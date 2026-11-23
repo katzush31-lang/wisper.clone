@@ -210,6 +210,9 @@ pub struct StatRow {
     /// Filled in by the account when reading rows back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
+    /// Server time the row was stored; only present when reading rows back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_at: Option<i64>,
 }
 
 pub struct Db {
@@ -1069,7 +1072,7 @@ impl Db {
              WHERE status='done' AND kind='dictation' AND created_at > ?1 ORDER BY created_at LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![since, limit], |r| {
-            Ok(StatRow { uid: r.get(0)?, created_at: r.get(1)?, words: r.get(2)?, duration_ms: r.get(3)?, app: r.get(4)?, fixes: r.get(5)?, device_id: None })
+            Ok(StatRow { uid: r.get(0)?, created_at: r.get(1)?, words: r.get(2)?, duration_ms: r.get(3)?, app: r.get(4)?, fixes: r.get(5)?, device_id: None, server_at: None })
         })?;
         rows.collect()
     }
@@ -1557,11 +1560,11 @@ mod tests {
         db.insert_dictation(&item("b", 2000, "four five")).unwrap();
         let rows = db.stats_rows_since(1000, 10).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0], StatRow { uid: "b".into(), created_at: 2000, words: 2, duration_ms: 6000, app: Some("Gmail".into()), fixes: 0, device_id: None });
+        assert_eq!(rows[0], StatRow { uid: "b".into(), created_at: 2000, words: 2, duration_ms: 6000, app: Some("Gmail".into()), fixes: 0, device_id: None, server_at: None });
         let now = Local.with_ymd_and_hms(2026, 11, 20, 15, 0, 0).unwrap();
         let remote = vec![
-            StatRow { uid: "b".into(), created_at: 2000, words: 2, duration_ms: 6000, app: None, fixes: 0, device_id: Some("d1".into()) },
-            StatRow { uid: "r1".into(), created_at: 3000, words: 10, duration_ms: 6000, app: Some("Word".into()), fixes: 1, device_id: Some("d2".into()) },
+            StatRow { uid: "b".into(), created_at: 2000, words: 2, duration_ms: 6000, app: None, fixes: 0, device_id: Some("d1".into()), server_at: None },
+            StatRow { uid: "r1".into(), created_at: 3000, words: 10, duration_ms: 6000, app: Some("Word".into()), fixes: 1, device_id: Some("d2".into()), server_at: None },
         ];
         assert_eq!(db.remote_stats_add(&remote).unwrap(), 2);
         assert_eq!(db.remote_stats_add(&remote).unwrap(), 0);

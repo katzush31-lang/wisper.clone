@@ -42,8 +42,10 @@ export default function DictionaryPage() {
       refreshSuggestions();
       refresh();
     });
+    const unSync = events.dictionaryChanged(refresh);
     return () => {
       un.then((f) => f()).catch(() => {});
+      unSync.then((f) => f()).catch(() => {});
     };
   }, [refresh, refreshSuggestions]);
 

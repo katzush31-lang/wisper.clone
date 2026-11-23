@@ -58,7 +58,12 @@ pub fn import(app: &AppHandle, settings_file: &std::path::Path) -> Result<String
     }
     let c = ControllerState::get(app);
     let db = &c.engine.db;
-    let settings = b.settings.normalised();
+    let old = c.engine.settings();
+    let mut settings = b.settings.normalised();
+    // Keep this computer's sync bookkeeping and account choices; stamp what the restore changed.
+    settings.section_times = old.section_times.clone();
+    settings.account = old.account.clone();
+    settings.stamp_changed_sections(&old, chrono::Utc::now().timestamp_millis());
     settings.save(settings_file).map_err(|e| e.to_string())?;
     crate::commands::apply_settings(app, &settings);
     let mut words = 0;
@@ -86,5 +91,6 @@ pub fn import(app: &AppHandle, settings_file: &std::path::Path) -> Result<String
             notes += 1;
         }
     }
+    crate::account::notify_changed(app);
     Ok(format!("Restored settings, {words} dictionary words, {snips} snippets and {notes} notes."))
 }

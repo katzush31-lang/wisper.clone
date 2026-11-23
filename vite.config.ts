@@ -19,5 +19,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "jsdom",
+    // The Cloudflare Worker in cloud/ has its own test setup (npm test inside cloud/).
+    include: ["src/**/*.test.{ts,tsx}"],
   },
 });

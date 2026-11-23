@@ -1,6 +1,6 @@
 import { Check, ExternalLink, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { api, type CleanupProvider, type ModelInfo, type Provider, type Settings } from "../../shared/api";
+import { api, events, type CleanupProvider, type ModelInfo, type Provider, type Settings } from "../../shared/api";
 import { keyStorageNote } from "../../shared/account";
 import { openUrl } from "../../shared/tauri";
 import { useAccountStatus } from "../useAccount";
@@ -136,6 +136,12 @@ export default function ProvidersSection({ settings, update }: SectionProps) {
   const refresh = useCallback(() => {
     api.keyStatus().then(setStatus).catch(() => {});
   }, []);
+  useEffect(() => {
+    const un = events.keysChanged(refresh);
+    return () => {
+      un.then((f) => f()).catch(() => {});
+    };
+  }, [refresh]);
   useEffect(() => {
     refresh();
     api.listModels("transcription").then(setSpeech).catch(() => setSpeech([]));

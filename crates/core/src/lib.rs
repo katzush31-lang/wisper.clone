@@ -2,6 +2,7 @@
 
 pub mod apps;
 pub mod audio;
+pub mod cloud;
 pub mod db;
 pub mod common_words;
 pub mod dictionary;

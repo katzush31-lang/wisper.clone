@@ -77,6 +77,17 @@ pub struct ItemsResponse {
     pub now: i64,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct StatsResponse {
+    #[serde(default)]
+    pub rows: Vec<StatRow>,
+    #[serde(default)]
+    pub now: i64,
+    /// True when the reply was cut short: ask again from the last row's `server_at`.
+    #[serde(default)]
+    pub more: bool,
+}
+
 #[derive(Default)]
 struct Tokens {
     access: Option<String>,
@@ -318,12 +329,8 @@ impl CloudClient {
         self.call(Method::POST, "/v1/stats", Some(json!({"rows": rows}))).await.map(|_| ())
     }
 
-    pub async fn get_stats(&self, since: i64) -> CloudResult<Vec<StatRow>> {
-        #[derive(Deserialize)]
-        struct R {
-            #[serde(default)]
-            rows: Vec<StatRow>,
-        }
-        Ok(self.json::<R>(Method::GET, &format!("/v1/stats?since={since}"), None).await?.rows)
+    /// `since` is a server-time cursor (the `now` of an earlier reply).
+    pub async fn get_stats(&self, since: i64) -> CloudResult<StatsResponse> {
+        self.json(Method::GET, &format!("/v1/stats?since={since}"), None).await
     }
 }

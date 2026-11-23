@@ -1,5 +1,6 @@
 //! Wisper desktop app: window management, tray, updater and wiring to the core pipeline.
 
+mod account;
 mod audio_capture;
 mod backup;
 mod bar;
@@ -62,6 +63,7 @@ pub fn run() {
             let controller = Controller::new(handle.clone(), engine, hook.clone(), capture, data_dir.clone());
             app.manage(ControllerState(controller.clone()));
             app.manage(commands::Paths { data_dir: data_dir.clone(), settings_file });
+            account::init(&handle, controller.engine.db.clone(), data_dir.clone());
 
             tray::create(&handle)?;
             bar::create(&handle)?;
@@ -86,10 +88,16 @@ pub fn run() {
                 show_main_window(&handle);
             }
             updater::spawn_background_checks(handle.clone());
+            account::start(&handle);
             Ok(())
         })
         .on_window_event(|window, event| {
             // Closing the hub hides it; the app keeps running in the tray.
+            if let WindowEvent::Focused(true) = event {
+                if window.label() == "main" {
+                    account::on_focus(window.app_handle());
+                }
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     api.prevent_close();
@@ -151,6 +159,14 @@ pub fn run() {
             commands::bar_dismiss,
             commands::export_backup,
             commands::import_backup,
+            account::account_status,
+            account::account_sign_in,
+            account::account_sign_out,
+            account::account_sync_now,
+            account::account_set_key_storage,
+            account::account_devices,
+            account::account_remove_device,
+            account::account_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Wisper");

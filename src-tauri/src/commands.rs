@@ -45,9 +45,16 @@ pub fn get_settings(app: AppHandle) -> Settings {
 
 #[tauri::command]
 pub fn save_settings(app: AppHandle, paths: State<'_, Paths>, settings: Settings) -> Res<Settings> {
-    let s = settings.normalised();
+    let old = ctl(&app).engine.settings();
+    let mut s = settings.normalised();
+    // Sync bookkeeping is the app's business, not the UI's: keep the recorded change times and
+    // the key-storage choice (changed only through account_set_key_storage), then stamp what changed.
+    s.section_times = old.section_times.clone();
+    s.account.key_storage = old.account.key_storage;
+    s.stamp_changed_sections(&old, chrono::Utc::now().timestamp_millis());
     s.save(&paths.settings_file).map_err(|e| format!("Couldn't save settings: {e}"))?;
     apply_settings(&app, &s);
+    crate::account::notify_changed(&app);
     Ok(s)
 }
 
@@ -212,7 +219,9 @@ fn clean_list(v: &[String]) -> Vec<String> {
 pub fn add_dictionary_entry(app: AppHandle, entry: DictEntry) -> Res<i64> {
     let word = dictionary::validate_word(&entry.word)?;
     let e = DictEntry { word, replace: clean_list(&entry.replace), sounds_like: clean_list(&entry.sounds_like), source: EntrySource::User, ..entry };
-    ctl(&app).engine.db.dict_add(&e).map_err(dberr)
+    let id = ctl(&app).engine.db.dict_add(&e).map_err(dberr)?;
+    crate::account::notify_changed(&app);
+    Ok(id)
 }
 
 #[tauri::command]
@@ -225,12 +234,16 @@ pub fn update_dictionary_entry(app: AppHandle, entry: DictEntry) -> Res<()> {
         } else {
             dberr(e)
         }
-    })
+    })?;
+    crate::account::notify_changed(&app);
+    Ok(())
 }
 
 #[tauri::command]
 pub fn delete_dictionary_entry(app: AppHandle, id: i64) -> Res<()> {
-    ctl(&app).engine.db.dict_delete(id).map_err(dberr)
+    ctl(&app).engine.db.dict_delete(id).map_err(dberr)?;
+    crate::account::notify_changed(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -250,6 +263,9 @@ pub fn resolve_suggestion(app: AppHandle, id: i64, accept: bool) -> Res<()> {
         }
     }
     let _ = app.emit("suggestions-changed", ());
+    if accept {
+        crate::account::notify_changed(&app);
+    }
     Ok(())
 }
 
@@ -289,6 +305,7 @@ pub fn import_dictionary_csv(app: AppHandle, text: String) -> Res<ImportResult> 
             skipped += 1;
         }
     }
+    crate::account::notify_changed(&app);
     Ok(ImportResult { added, skipped })
 }
 
@@ -302,18 +319,22 @@ pub fn list_snippets(app: AppHandle) -> Res<Vec<Snippet>> {
 #[tauri::command]
 pub fn save_snippet(app: AppHandle, snippet: Snippet) -> Res<i64> {
     let (trigger, expansion) = snippets::validate(&snippet.trigger, &snippet.expansion)?;
-    ctl(&app).engine.db.snippet_save(&Snippet { trigger, expansion, ..snippet }).map_err(|e| {
+    let id = ctl(&app).engine.db.snippet_save(&Snippet { trigger, expansion, ..snippet }).map_err(|e| {
         if e.to_string().contains("UNIQUE") {
             "Another snippet already uses that phrase.".to_string()
         } else {
             dberr(e)
         }
-    })
+    })?;
+    crate::account::notify_changed(&app);
+    Ok(id)
 }
 
 #[tauri::command]
 pub fn delete_snippet(app: AppHandle, id: i64) -> Res<()> {
-    ctl(&app).engine.db.snippet_delete(id).map_err(dberr)
+    ctl(&app).engine.db.snippet_delete(id).map_err(dberr)?;
+    crate::account::notify_changed(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -335,6 +356,7 @@ pub fn import_snippets_json(app: AppHandle, text: String) -> Res<ImportResult> {
             skipped += 1;
         }
     }
+    crate::account::notify_changed(&app);
     Ok(ImportResult { added, skipped })
 }
 
@@ -353,7 +375,9 @@ pub fn default_mode_instructions(id: String) -> Option<String> {
 #[tauri::command]
 pub fn get_stats(app: AppHandle) -> Res<Stats> {
     let c = ctl(&app);
-    c.engine.db.stats(c.engine.settings().typing_wpm, chrono::Local::now()).map_err(dberr)
+    // Signed in: numbers from all your computers combined; otherwise just this one.
+    let all = crate::account::combined_stats(&app);
+    c.engine.db.stats_with(c.engine.settings().typing_wpm, chrono::Local::now(), all).map_err(dberr)
 }
 
 // ---------------------------------------------------------------- providers
@@ -383,6 +407,8 @@ pub fn set_api_key(app: AppHandle, provider: String, key: String) -> Res<()> {
     crate::secrets::set(&provider, &key)?;
     let c = ctl(&app);
     c.engine.set_keys(load_keys());
+    // Signed in with keys kept in the account: upload this one too (in the background).
+    crate::account::key_changed(&app, &provider, &key);
     // Dictations that failed because of a key problem get another go.
     if c.engine.requeue_auth_failures() > 0 {
         let _ = app.emit("history-changed", "");

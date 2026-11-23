@@ -571,6 +571,10 @@ impl Controller {
             };
             let result = tokio::time::timeout(limit, me.engine.process(rec, &progress)).await;
             let _ = me.app.emit("history-changed", "");
+            if matches!(result, Ok(Ok(Outcome::Text(_)))) {
+                // A finished dictation adds a usage-stats row; share it in the background.
+                crate::account::notify_changed(&me.app);
+            }
             let me2 = me.clone();
             let _ = tauri::async_runtime::spawn_blocking(move || match result {
                 Ok(r) => me2.deliver(r, target, app, hwnd, cancelled, kind, token),

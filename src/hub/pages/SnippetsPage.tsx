@@ -1,6 +1,6 @@
 import { Pencil, Scissors, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, type Snippet } from "../../shared/api";
+import { api, events, type Snippet } from "../../shared/api";
 import { ConfirmDialog, EmptyState, Modal, SearchBox, errorText, useToast } from "../components";
 import { previewSnippetsJson, truncate } from "./library/helpers";
 import "./library/library.css";
@@ -26,7 +26,13 @@ export default function SnippetsPage() {
   const refresh = useCallback(() => {
     api.listSnippets().then(setItems).catch(() => setItems([]));
   }, []);
-  useEffect(refresh, [refresh]);
+  useEffect(() => {
+    refresh();
+    const un = events.snippetsChanged(refresh);
+    return () => {
+      un.then((f) => f()).catch(() => {});
+    };
+  }, [refresh]);
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
