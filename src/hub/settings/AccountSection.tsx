@@ -290,7 +290,7 @@ export default function AccountSection({ onDone }: { onDone?: () => void }) {
       <ConfirmDialog
         open={confirm === "remove-cloud-keys"}
         title="Remove your API keys from your account?"
-        message="The encrypted copy in your account is deleted. Every computer keeps the keys it already has, but a new computer will need the keys pasted in again."
+        message="The encrypted copy in your account is deleted. Every computer keeps the keys it already has and switches to keeping them on that computer only. A new computer will need the keys pasted in again."
         confirmLabel="Remove from account"
         onCancel={() => setConfirm(null)}
         onConfirm={() => {

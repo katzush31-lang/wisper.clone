@@ -85,7 +85,7 @@ export async function getKeys(req: Request, env: Env): Promise<Response> {
     "SELECT provider, ciphertext, iv, key_version, updated_at FROM api_keys WHERE user_id = ?",
     userId,
   );
-  const out: Record<string, { key: string; updated_at: number } | null> = {};
+  const out: Record<string, { key: string; updated_at: number } | null | number> = {};
   for (const p of PROVIDERS) out[p] = null;
   for (const row of rows) {
     if (!isProvider(row.provider)) continue;
@@ -96,7 +96,12 @@ export async function getKeys(req: Request, env: Env): Promise<Response> {
       console.error("api key could not be decrypted for provider", row.provider);
     }
   }
-  return json(out);
+  const user = await one<{ keys_removed_at: number | null }>(
+    env.DB,
+    "SELECT keys_removed_at FROM users WHERE id = ?", // users.id IS the token's user id
+    userId,
+  );
+  return json({ ...out, removed_at: user?.keys_removed_at ?? null });
 }
 
 export async function putKey(req: Request, env: Env, provider: string): Promise<Response> {
@@ -122,12 +127,16 @@ export async function putKey(req: Request, env: Env, provider: string): Promise<
        ciphertext = excluded.ciphertext, iv = excluded.iv, key_version = excluded.key_version, updated_at = excluded.updated_at`,
     userId, provider, enc.ciphertext, enc.iv, enc.keyVersion, now,
   );
+  await exec(env.DB, "UPDATE users SET keys_removed_at = NULL WHERE id = ?", userId);
   return json({ updated_at: now });
 }
 
 export async function deleteKeys(req: Request, env: Env): Promise<Response> {
   const { userId } = await requireUser(req, env);
-  await exec(env.DB, "DELETE FROM api_keys WHERE user_id = ?", userId);
+  await env.DB.batch([
+    stmt(env.DB, "DELETE FROM api_keys WHERE user_id = ?", userId),
+    stmt(env.DB, "UPDATE users SET keys_removed_at = ? WHERE id = ?", Date.now(), userId),
+  ]);
   return noContent();
 }
 

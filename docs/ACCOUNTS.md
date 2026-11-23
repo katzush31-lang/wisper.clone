@@ -185,3 +185,7 @@ the maximum row count (`more: true`), the client calls again with `since` = the 
   blanks a key because the account no longer has it, the local key is stashed as
   `previous-<provider>-api-key`. A first merge into a new/different account uploads all of this
   computer's words and snippets.
+- (Third review) "Remove keys from your account" (`DELETE /v1/keys`) sets `users.keys_removed_at`;
+  `GET /v1/keys` returns `removed_at`. The removing computer switches itself to Local. Other Cloud
+  computers that see a newer `removed_at` switch themselves to Local and KEEP their keys. Uploading
+  a key (PUT, non-empty) clears the marker. Clearing a single key still propagates as a deletion.
