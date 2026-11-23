@@ -51,7 +51,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           if [ -n "$ANTHROPIC_API_KEY" ]; then
-            cargo test -p wisper-core --locked --test quick_eval -- --ignored --nocapture
+            QUICK_EVAL_MODELS=claude-sonnet-5-5,claude-haiku-5-5 cargo test -p wisper-core --locked --test quick_eval -- --ignored --nocapture
           else
             echo "No ANTHROPIC_API_KEY secret yet; skipping the quick-path comparison."
           fi
@@ -67,6 +67,17 @@ jobs:
             cargo test -p wisper-core --locked --test golden -- --ignored --nocapture
           else
             echo "No ANTHROPIC_API_KEY secret yet; skipping model comparison."
+          fi
+
+      - name: Live transcription against the real OpenAI Realtime API (only when the key is set)
+        continue-on-error: true
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -n "$OPENAI_API_KEY" ]; then
+            cargo test -p wisper-core --locked --test live_realtime -- --ignored --nocapture
+          else
+            echo "No OPENAI_API_KEY secret; skipping the live transcription check."
           fi
 
   cloud-test:

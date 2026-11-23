@@ -539,3 +539,28 @@ async fn cancelled_recording_stops_live_transcription() {
     assert_eq!(log.closed, 1, "live connection left open after cancel");
     assert!(log.commits.is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn long_dictations_rotate_to_fresh_sessions_without_losing_pieces() {
+    // Rotate at every piece boundary (in real use: after 25 minutes).
+    let srv = fake_server(|_| Act::Complete { after_ms: 50 }, false).await;
+    let h = harness(Some(&srv.url), LiveTuning { rotate_after: Duration::ZERO, ..quick_tuning() });
+    let rec = record(&h, &four_pieces());
+    let (id, _) = process(&h, rec).await;
+    let from = sources(&h, &id);
+    assert!(from.iter().all(|f| *f == "live"), "{from:?}");
+    // Old sessions are closed once their pieces are back.
+    for _ in 0..100 {
+        let log = srv.log.lock().unwrap();
+        if log.closed == log.connections {
+            break;
+        }
+        drop(log);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let log = srv.log.lock().unwrap();
+    assert!(log.connections >= 2, "connections: {}", log.connections);
+    assert_eq!(log.closed, log.connections);
+    // Each piece was committed exactly once, across the sessions.
+    assert_eq!(log.commits.len(), from.len());
+}
