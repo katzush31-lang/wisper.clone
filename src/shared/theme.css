@@ -1,69 +1,77 @@
 @import "@fontsource-variable/inter";
-@import "@fontsource/instrument-serif";
 
-/* Design tokens. Light theme is the default; dark applies via [data-theme="dark"]. */
+/* Design tokens. Light theme is the default; dark applies via [data-theme="dark"].
+   Graphite surfaces with one spruce-green "mic is live" accent. Text colours meet WCAG AA (4.5:1) on every surface. */
 :root {
   --font-ui: "Inter Variable", "Segoe UI", system-ui, sans-serif;
-  --font-display: "Instrument Serif", Georgia, "Times New Roman", serif;
+  --font-display: var(--font-ui);
 
-  --frame: #f6f5f1;
-  --panel: #fdfcfa;
-  --panel-border: #eceae4;
-  --card: #f6f5f0;
-  --card-strong: #efede7;
-  --row-hover: #f3f2ed;
-  --nav-active: #ecebe5;
-  --text: #1b1b1a;
-  --text-muted: #6d6b66;
-  --text-faint: #9a978f;
-  --line: #e9e7e1;
-  --accent: #1f5e5b;
-  --accent-strong: #174846;
-  --accent-soft: #d9ebe8;
-  --accent-mid: #7fc2b8;
-  --cta: #f5a33b;
-  --cta-border: #c9781c;
-  --button-dark: #121212;
+  --frame: #e9ebea;
+  --panel: #ffffff;
+  --panel-border: #d5d9d7;
+  --card: #f3f5f4;
+  --card-strong: #e4e8e6;
+  --row-hover: #eef1ef;
+  --nav-active: #dcefe6;
+  --text: #15191c;
+  --text-muted: #4a5359;
+  --text-faint: #626b71;
+  --line: #dde1df;
+  --accent: #15664d;
+  --accent-strong: #0e5240;
+  --accent-soft: #dcefe6;
+  --accent-mid: #6cbf9e;
+  --cta: #b45309;
+  --cta-border: #92400e;
+  --button-dark: #15664d;
   --button-dark-text: #ffffff;
-  --button-soft: #ecebe5;
-  --pro-bg: #ead9ff;
-  --pro-text: #6b3fa3;
-  --danger: #c2412d;
-  --danger-soft: #fbe6e1;
-  --success: #2c7a4b;
-  --warning: #b7791f;
-  --focus: #1f5e5b55;
-  --shadow: 0 1px 2px rgba(20, 20, 20, 0.04), 0 4px 16px rgba(20, 20, 20, 0.05);
-  --radius-lg: 22px;
-  --radius-md: 14px;
-  --radius-sm: 10px;
+  --button-soft: #e6eaf1;
+  --pro-bg: #dcefe6;
+  --pro-text: #0e5240;
+  --danger: #b42318;
+  --danger-soft: #fde8e6;
+  --success: #1d7a46;
+  --warning: #8a5a00;
+  --focus: color-mix(in srgb, var(--accent) 30%, transparent);
+  --focus-ring: #15664d;
+  --shadow: 0 1px 2px rgba(16, 24, 20, 0.06);
+  --shadow-pop: 0 12px 40px rgba(16, 24, 20, 0.18);
+  --radius-lg: 14px;
+  --radius-md: 10px;
+  --radius-sm: 8px;
   color-scheme: light;
 }
 
 [data-theme="dark"] {
-  --frame: #151514;
-  --panel: #1c1c1b;
-  --panel-border: #2a2a28;
-  --card: #232322;
-  --card-strong: #2b2b29;
-  --row-hover: #262625;
-  --nav-active: #2a2a28;
-  --text: #f1efe9;
-  --text-muted: #a8a59e;
-  --text-faint: #77746d;
-  --line: #2d2d2b;
-  --accent: #5fb3a8;
-  --accent-strong: #7fc9be;
-  --accent-soft: #1f3a37;
-  --accent-mid: #3f8379;
-  --button-dark: #f1efe9;
-  --button-dark-text: #121212;
-  --button-soft: #2b2b29;
-  --pro-bg: #3b2a52;
-  --pro-text: #d8bfff;
-  --danger: #ef7f6a;
-  --danger-soft: #3a2420;
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.25);
+  --frame: #111413;
+  --panel: #181c1b;
+  --panel-border: #2a302e;
+  --card: #1e2321;
+  --card-strong: #29302d;
+  --row-hover: #212725;
+  --nav-active: #1c3a30;
+  --text: #e8ecea;
+  --text-muted: #a9b3af;
+  --text-faint: #8e9894;
+  --line: #2a302e;
+  --accent: #5fd0a3;
+  --accent-strong: #86e0bc;
+  --accent-soft: #1c3a30;
+  --accent-mid: #2f8a67;
+  --cta: #f0b14a;
+  --cta-border: #c98a22;
+  --button-dark: #5fd0a3;
+  --button-dark-text: #0d1512;
+  --button-soft: #29302d;
+  --pro-bg: #1c3a30;
+  --pro-text: #a5ecd0;
+  --danger: #f08a7a;
+  --danger-soft: #3a2220;
+  --success: #5cc98a;
+  --warning: #e3b045;
+  --focus-ring: #86e0bc;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-pop: 0 12px 40px rgba(0, 0, 0, 0.5);
   color-scheme: dark;
 }
 
@@ -109,14 +117,51 @@ button {
 }
 
 :focus-visible {
-  outline: 2px solid var(--focus);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 .display {
   font-family: var(--font-display);
-  font-weight: 400;
-  letter-spacing: -0.01em;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+kbd,
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  min-width: 22px;
+  justify-content: center;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-bottom-width: 2px;
+  line-height: 1.5;
 }
 
 /* Buttons */
@@ -127,7 +172,7 @@ button {
   gap: 8px;
   height: 36px;
   padding: 0 16px;
-  border-radius: 9px;
+  border-radius: 8px;
   border: 1px solid transparent;
   font-weight: 600;
   font-size: 13.5px;
@@ -143,10 +188,11 @@ button {
   color: var(--button-dark-text);
 }
 .btn-dark:hover:not(:disabled) {
-  opacity: 0.88;
+  background: var(--accent-strong);
 }
 .btn-soft {
-  background: var(--button-soft);
+  background: var(--panel);
+  border-color: var(--panel-border);
   color: var(--text);
 }
 .btn-soft:hover:not(:disabled) {
@@ -217,7 +263,7 @@ button {
   width: 38px;
   height: 22px;
   border-radius: 11px;
-  background: var(--card-strong);
+  background: var(--text-faint);
   border: none;
   flex-shrink: 0;
   transition: background 0.15s ease;

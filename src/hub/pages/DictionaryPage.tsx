@@ -100,7 +100,7 @@ export default function DictionaryPage() {
       <div className="page-header">
         <h1 className="page-title">Dictionary</h1>
         <div className="lib-actions">
-          <button className="btn btn-dark" onClick={() => setImporting(true)}>
+          <button className="btn btn-soft" onClick={() => setImporting(true)}>
             Import
           </button>
           <button className="btn btn-dark" onClick={() => setEditing(blank())}>

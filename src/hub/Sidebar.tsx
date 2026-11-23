@@ -1,43 +1,19 @@
-import {
-  BarChart3,
-  BookText,
-  CircleHelp,
-  FileText,
-  Mic,
-  Scissors,
-  Settings,
-  Type,
-  Wand2,
-} from "lucide-react";
-import type { ReactNode } from "react";
+// The slim left rail: every page as an icon with its name underneath, grouped by what it's for.
+import { CircleHelp } from "lucide-react";
+import { PAGES, SETTINGS_PAGE, PAGE_ORDER, type NavPage, type PageId } from "./nav";
 
-export type PageId =
-  | "home"
-  | "insights"
-  | "dictionary"
-  | "snippets"
-  | "style"
-  | "transforms"
-  | "scratchpad";
-
-const NAV: { id: PageId; label: string; icon: ReactNode }[] = [
-  { id: "home", label: "Dictation", icon: <Mic size={17} /> },
-  { id: "insights", label: "Insights", icon: <BarChart3 size={17} /> },
-  { id: "dictionary", label: "Dictionary", icon: <BookText size={17} /> },
-  { id: "snippets", label: "Snippets", icon: <Scissors size={17} /> },
-  { id: "style", label: "Style", icon: <Type size={17} /> },
-  { id: "transforms", label: "Transforms", icon: <Wand2 size={17} /> },
-  { id: "scratchpad", label: "Scratchpad", icon: <FileText size={17} /> },
-];
+export type { PageId } from "./nav";
 
 export function Logo() {
   return (
     <div className="logo">
-      <svg width="22" height="18" viewBox="0 0 22 18" aria-hidden>
-        {[4, 9, 14, 7, 11].map((h, i) => (
-          <rect key={i} x={i * 4.4} y={(18 - h) / 2} width="2.6" height={h} rx="1.3" fill="currentColor" />
-        ))}
-      </svg>
+      <span className="logo-mark" aria-hidden>
+        <svg width="14" height="14" viewBox="0 0 14 14">
+          {[5, 10, 14, 8].map((h, i) => (
+            <rect key={i} x={i * 3.6} y={(14 - h) / 2} width="2.2" height={h} rx="1.1" fill="currentColor" />
+          ))}
+        </svg>
+      </span>
       <span>Wisper</span>
     </div>
   );
@@ -46,36 +22,46 @@ export function Logo() {
 interface Props {
   page: PageId;
   onNavigate: (p: PageId) => void;
-  onOpenSettings: () => void;
   onOpenHelp: () => void;
-  footer?: ReactNode;
 }
 
-export default function Sidebar({ page, onNavigate, onOpenSettings, onOpenHelp, footer }: Props) {
+function RailItem({ p, page, onNavigate }: { p: NavPage; page: PageId; onNavigate: (p: PageId) => void }) {
+  const n = PAGE_ORDER.indexOf(p.id);
+  const keyHint = p.id === "settings" ? "Ctrl+," : n >= 0 ? `Ctrl+${n + 1}` : "";
   return (
-    <nav className="sidebar">
-      <Logo />
-      <div className="nav-list">
-        {NAV.map((n) => (
-          <button
-            key={n.id}
-            className={`nav-item ${page === n.id ? "active" : ""}`}
-            onClick={() => onNavigate(n.id)}
-          >
-            {n.icon}
-            <span>{n.label}</span>
-          </button>
+    <button
+      className="rail-item"
+      aria-current={page === p.id ? "page" : undefined}
+      title={`${p.hint}${keyHint ? ` (${keyHint})` : ""}`}
+      onClick={() => onNavigate(p.id)}
+    >
+      {p.icon(20)}
+      <span>{p.label}</span>
+    </button>
+  );
+}
+
+export default function Sidebar({ page, onNavigate, onOpenHelp }: Props) {
+  return (
+    <nav className="rail" aria-label="Pages">
+      <div className="rail-group">
+        {PAGES.filter((p) => p.group === "main").map((p) => (
+          <RailItem key={p.id} p={p} page={page} onNavigate={onNavigate} />
         ))}
       </div>
-      <div className="sidebar-spacer" />
-      {footer}
-      <div className="nav-list nav-bottom">
-        <button className="nav-item" onClick={onOpenSettings}>
-          <Settings size={17} />
-          <span>Settings</span>
-        </button>
-        <button className="nav-item" onClick={onOpenHelp}>
-          <CircleHelp size={17} />
+      <div className="rail-heading" id="rail-teach">
+        Teach Wisper
+      </div>
+      <div className="rail-group" role="group" aria-labelledby="rail-teach">
+        {PAGES.filter((p) => p.group === "teach").map((p) => (
+          <RailItem key={p.id} p={p} page={page} onNavigate={onNavigate} />
+        ))}
+      </div>
+      <div className="rail-spacer" />
+      <div className="rail-group">
+        <RailItem p={SETTINGS_PAGE} page={page} onNavigate={onNavigate} />
+        <button className="rail-item" title="Open the guide in your browser" onClick={onOpenHelp}>
+          <CircleHelp size={20} />
           <span>Help</span>
         </button>
       </div>

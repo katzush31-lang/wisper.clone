@@ -47,10 +47,9 @@
 .lib-select { width: auto; min-width: 180px; }
 .lib-hero-chips { display: flex; flex-direction: column; gap: 10px; margin: 0 0 22px; }
 .lib-chip-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.lib-chip { background: rgba(255,255,255,0.22); backdrop-filter: blur(6px); border-radius: 10px; padding: 8px 14px; font-weight: 500; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-chip { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px; padding: 8px 14px; font-weight: 500; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lib-chip.italic { font-style: italic; }
-.lib-hero-close { position: absolute; top: 14px; right: 14px; background: rgba(0,0,0,0.3); color: #fff; }
-.lib-hero-close:hover { background: rgba(0,0,0,0.5); color: #fff; }
+.lib-hero-close { position: absolute; top: 12px; right: 12px; }
 .lib-hero-text { max-width: 560px; }
 .lib-trigger { font-weight: 600; white-space: nowrap; max-width: 40%; overflow: hidden; text-overflow: ellipsis; }
 .lib-oneline { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; color: var(--text-muted); }
