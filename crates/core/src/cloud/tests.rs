@@ -36,6 +36,7 @@ struct St {
     log: Vec<String>,
     /// Reason sent with `revoked` replies (None = like an older server that sends none).
     revoke_reason: Option<String>,
+    keys_removed_at: HashMap<String, i64>,
     settings_delay_ms: u64,
 }
 
@@ -128,7 +129,8 @@ fn handle(st: &Mutex<St>, req: &Request) -> ResponseTemplate {
         }
         ("GET", "/v1/keys") => {
             let get = |p: &str| st.keys.get(&(user.clone(), p.to_string())).map(|(k, t)| json!({"key": k, "updated_at": t})).unwrap_or(Value::Null);
-            json_resp(200, json!({"openai": get("openai"), "anthropic": get("anthropic")}))
+            let removed = st.keys_removed_at.get(&user).map(|t| json!(t)).unwrap_or(Value::Null);
+            json_resp(200, json!({"openai": get("openai"), "anthropic": get("anthropic"), "removed_at": removed}))
         }
         ("PUT", p) if p.starts_with("/v1/keys/") => {
             let prov = p.trim_start_matches("/v1/keys/").to_string();
@@ -136,12 +138,14 @@ fn handle(st: &Mutex<St>, req: &Request) -> ResponseTemplate {
             if key.is_empty() {
                 st.keys.remove(&(user, prov));
             } else {
+                st.keys_removed_at.remove(&user);
                 st.keys.insert((user, prov), (key, now));
             }
             json_resp(200, json!({"updated_at": now}))
         }
         ("DELETE", "/v1/keys") => {
             st.keys.retain(|(u, _), _| *u != user);
+            st.keys_removed_at.insert(user.clone(), now);
             ResponseTemplate::new(204)
         }
         ("GET", "/v1/settings") => {
@@ -903,4 +907,68 @@ async fn removed_or_replaced_keys_are_stashed_once_so_they_can_be_recovered() {
     b.sync().await;
     assert_eq!(b.keys.get("anthropic").as_deref(), Some("sk-ant-rotated-again-0000000000"));
     assert_eq!(b.keys.get("previous-anthropic").as_deref(), Some(KEY_A));
+}
+
+#[tokio::test]
+async fn removing_cloud_keys_switches_this_computer_to_local_and_others_keep_their_keys() {
+    let fake = Fake::start().await;
+    let (mut a, mut b) = (Computer::new(&fake.url()), Computer::new(&fake.url()));
+    a.sign_in("u1").await;
+    a.choose(KeyStorage::Cloud).await;
+    a.set_key("anthropic", KEY_A).await;
+    b.sign_in("u1").await;
+    b.choose(KeyStorage::Cloud).await;
+    assert_eq!(b.keys.get("anthropic").as_deref(), Some(KEY_A));
+    pause().await;
+
+    a.engine.remove_cloud_keys().await.unwrap();
+    assert!(fake.server_keys().is_empty());
+    assert_eq!(a.engine.key_storage(), Some(KeyStorage::Local));
+    assert_eq!(a.keys.get("anthropic").as_deref(), Some(KEY_A));
+
+    // Several later syncs on both computers: the account stays empty and nobody loses a key.
+    let first = b.sync().await;
+    assert!(first.switched_to_local);
+    assert_eq!(first.notice.as_deref(), Some(sync::KEYS_REMOVED_NOTICE));
+    for _ in 0..3 {
+        a.sync().await;
+        let r = b.sync().await;
+        assert!(r.notice.is_none());
+    }
+    assert!(fake.server_keys().is_empty(), "nothing re-uploaded the keys");
+    assert_eq!(b.keys.get("anthropic").as_deref(), Some(KEY_A), "B keeps its working key");
+    assert!(b.keys.get("previous-anthropic").is_none(), "nothing was blanked or stashed");
+    assert_eq!(b.engine.key_storage(), Some(KeyStorage::Local));
+
+    // Switching A back to Cloud re-uploads; B stays Local until its user changes it.
+    a.choose(KeyStorage::Cloud).await;
+    assert_eq!(fake.server_keys().get("anthropic").map(String::as_str), Some(KEY_A));
+    a.sync().await;
+    b.sync().await;
+    assert_eq!(b.engine.key_storage(), Some(KeyStorage::Local));
+    assert_eq!(b.keys.get("anthropic").as_deref(), Some(KEY_A));
+    // A later removal is news again, even after the account had keys.
+    b.choose(KeyStorage::Cloud).await;
+    a.engine.remove_cloud_keys().await.unwrap();
+    pause().await;
+    assert!(b.sync().await.switched_to_local);
+}
+
+#[tokio::test]
+async fn removing_one_provider_still_propagates_but_removing_all_does_not_blank_keys() {
+    let fake = Fake::start().await;
+    let (mut a, mut b) = (Computer::new(&fake.url()), Computer::new(&fake.url()));
+    a.sign_in("u1").await;
+    a.choose(KeyStorage::Cloud).await;
+    a.set_key("anthropic", KEY_A).await;
+    a.set_key("openai", KEY_B).await;
+    b.sign_in("u1").await;
+    b.choose(KeyStorage::Cloud).await;
+    a.set_key("openai", "").await; // one provider removed: propagates (previous stashed)
+    let r = b.sync().await;
+    assert!(!r.switched_to_local);
+    assert!(b.keys.get("openai").is_none());
+    assert_eq!(b.keys.get("previous-openai").as_deref(), Some(KEY_B));
+    assert_eq!(b.keys.get("anthropic").as_deref(), Some(KEY_A));
+    assert_eq!(b.engine.key_storage(), Some(KeyStorage::Cloud));
 }

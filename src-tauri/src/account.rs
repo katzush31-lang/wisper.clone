@@ -113,6 +113,9 @@ pub struct AccountStatus {
     last_sync: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sync_error: Option<String>,
+    /// A friendly heads-up (not an error), e.g. keys were removed from the account elsewhere.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notice: Option<String>,
 }
 
 pub struct Account {
@@ -120,6 +123,7 @@ pub struct Account {
     /// None when this build has no account service URL.
     engine: Option<Arc<SyncEngine>>,
     last_error: Mutex<Option<String>>,
+    notice: Mutex<Option<String>>,
     /// Bumped on every change; a debounced sync only runs if nothing newer came in.
     generation: AtomicU64,
     signing_in: AtomicBool,
@@ -139,6 +143,7 @@ pub fn init(app: &AppHandle, db: Arc<Db>, data_dir: std::path::PathBuf) {
         app: app.clone(),
         engine,
         last_error: Mutex::new(None),
+        notice: Mutex::new(None),
         generation: AtomicU64::new(0),
         signing_in: AtomicBool::new(false),
         cancel_sign_in: Mutex::new(None),
@@ -224,6 +229,7 @@ impl Account {
             key_storage_chosen: self.engine.as_ref().map(|e| e.key_storage_chosen()).unwrap_or(false),
             last_sync: self.engine.as_ref().and_then(|e| e.last_sync()),
             sync_error: self.last_error.lock().clone(),
+            notice: self.notice.lock().clone(),
         }
     }
 
@@ -296,6 +302,11 @@ impl Account {
                 tracing::warn!("couldn't save synced settings: {e}");
             }
             commands::apply_settings(&self.app, &cur);
+        }
+        if r.switched_to_local {
+            // This computer now keeps its own keys: mirror that into settings for the UI.
+            let _ = commands::update_settings(&self.app, |s| s.account.key_storage = KeyStorage::Local);
+            *self.notice.lock() = r.notice.clone();
         }
         if r.keys_changed {
             if c.engine.requeue_auth_failures() > 0 {
@@ -450,6 +461,7 @@ pub async fn account_set_key_storage(app: AppHandle, storage: String) -> Res<Acc
     // The engine records the choice itself (under its lock); settings only mirror it for the UI.
     let keys_changed = engine.set_key_storage(to).await.map_err(|e| e.message())?;
     commands::update_settings(&app, |s| s.account.key_storage = to)?;
+    *a.notice.lock() = None;
     if keys_changed {
         let _ = app.emit("keys-changed", "");
     }
@@ -462,6 +474,10 @@ pub async fn account_set_key_storage(app: AppHandle, storage: String) -> Res<Acc
 pub async fn account_remove_cloud_keys(app: AppHandle) -> Res<AccountStatus> {
     let a = account(&app);
     a.signed_in_engine()?.remove_cloud_keys().await.map_err(|e| e.message())?;
+    // This computer now keeps its own keys (the engine recorded it); mirror that for the UI.
+    commands::update_settings(&app, |s| s.account.key_storage = KeyStorage::Local)?;
+    *a.notice.lock() = None;
+    a.trigger_soon();
     Ok(a.emit())
 }
 

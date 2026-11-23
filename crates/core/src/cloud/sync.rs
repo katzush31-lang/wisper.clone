@@ -205,7 +205,7 @@ impl SyncEngine {
     /// Everything this computer remembers about being signed in. Settings, dictionary,
     /// snippets and API keys stay (keys are handled separately by `clear_synced_keys`).
     fn local_sign_out(&self) {
-        for key in [META_ACCOUNT, META_LAST_OK, "key_hash_openai", "key_hash_anthropic"].into_iter().chain(CURSORS) {
+        for key in [META_ACCOUNT, META_LAST_OK, META_REMOVED_SEEN, "key_hash_openai", "key_hash_anthropic"].into_iter().chain(CURSORS) {
             let _ = self.db.delete_meta(key);
         }
         let _ = self.db.set_meta(META_CHOSEN, "0");
@@ -494,6 +494,7 @@ impl SyncEngine {
         let _g = self.lock.lock().await;
         let from = self.key_storage();
         let mut changed = false;
+        let mut sub = SyncReport::default();
         let r: CloudResult<()> = async {
             match to {
                 KeyStorage::Local => {
@@ -515,7 +516,7 @@ impl SyncEngine {
                     }
                 }
                 KeyStorage::Cloud => {
-                    changed = self.sync_keys(&mut SyncReport::default()).await?;
+                    changed = self.sync_keys(&mut sub).await?;
                 }
             }
             Ok(())
@@ -523,7 +524,9 @@ impl SyncEngine {
         .await;
         match r {
             Ok(()) => {
-                self.set_meta(META_MODE, to.as_str())?;
+                // (If the account's keys turned out to have been removed, we stayed local.)
+                let mode = if sub.switched_to_local { KeyStorage::Local } else { to };
+                self.set_meta(META_MODE, mode.as_str())?;
                 self.set_meta(META_CHOSEN, "1")?;
                 Ok(changed)
             }

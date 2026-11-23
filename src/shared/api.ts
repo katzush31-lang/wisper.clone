@@ -113,6 +113,8 @@ export interface AccountStatus {
   /** unix ms of the last successful sync */
   lastSync?: number;
   syncError?: string;
+  /** A one-off message to show, e.g. keys were removed from the account on another computer */
+  notice?: string;
 }
 
 export interface AccountDevice {

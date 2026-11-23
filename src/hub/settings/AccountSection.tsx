@@ -165,6 +165,12 @@ export default function AccountSection({ onDone }: { onDone?: () => void }) {
         </>
       )}
 
+      {signedIn && status?.notice && (
+        <div className="card lib-banner-plain" role="status">
+          <p>{status.notice}</p>
+        </div>
+      )}
+
       {signedIn && status && status.keyStorageChosen === false && (
         <div className="card account-choose" role="region" aria-label="Choose where to keep your API keys">
           <strong>One last step: where should your API keys be kept?</strong>

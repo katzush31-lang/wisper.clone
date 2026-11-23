@@ -749,7 +749,7 @@ async fn s09_another_user_cannot_see_or_touch_user_as_data() {
         assert_eq!(v["sections"], json!({}), "settings leaked with {spoof:?}");
     }
     let (_, v) = c.req("GET", "/v1/keys", None).await;
-    assert_eq!(v, json!({"openai": null, "anthropic": null}));
+    assert_eq!(v, json!({"openai": null, "anthropic": null, "removed_at": null}));
     let (_, v) = c.req("GET", "/v1/devices", None).await;
     let ids: Vec<&str> = v.as_array().unwrap().iter().map(|d| d["id"].as_str().unwrap()).collect();
     assert_eq!(ids.len(), 2, "C sees only its own two computers");
