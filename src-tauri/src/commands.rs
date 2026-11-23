@@ -44,18 +44,34 @@ pub fn get_settings(app: AppHandle) -> Settings {
 }
 
 #[tauri::command]
-pub fn save_settings(app: AppHandle, paths: State<'_, Paths>, settings: Settings) -> Res<Settings> {
+pub fn save_settings(app: AppHandle, settings: Settings) -> Res<Settings> {
     let old = ctl(&app).engine.settings();
-    let mut s = settings.normalised();
-    // Sync bookkeeping is the app's business, not the UI's: keep the recorded change times and
-    // the key-storage choice (changed only through account_set_key_storage), then stamp what changed.
-    s.section_times = old.section_times.clone();
+    let mut s = settings;
+    // The key-storage choice changes only through account_set_key_storage.
     s.account.key_storage = old.account.key_storage;
-    s.stamp_changed_sections(&old, chrono::Utc::now().timestamp_millis());
-    s.save(&paths.settings_file).map_err(|e| format!("Couldn't save settings: {e}"))?;
-    apply_settings(&app, &s);
-    crate::account::notify_changed(&app);
+    commit_settings(&app, &old, s)
+}
+
+/// The one way to change and save settings from inside the app (the UI, the tray, learned
+/// styles, restore): normalises, keeps the app-managed sync bookkeeping, stamps the synced
+/// sections that changed, saves, applies and schedules a sync.
+fn commit_settings(app: &AppHandle, old: &Settings, new: Settings) -> Res<Settings> {
+    let mut s = new.normalised();
+    s.section_times = old.section_times.clone();
+    s.stamp_changed_sections(old, chrono::Utc::now().timestamp_millis());
+    let file = app.state::<Paths>().settings_file.clone();
+    s.save(&file).map_err(|e| format!("Couldn't save settings: {e}"))?;
+    apply_settings(app, &s);
+    crate::account::notify_changed(app);
     Ok(s)
+}
+
+/// Changes the current settings with `f` and saves them the standard way (see `commit_settings`).
+pub fn update_settings(app: &AppHandle, f: impl FnOnce(&mut Settings)) -> Res<Settings> {
+    let old = ctl(app).engine.settings();
+    let mut s = old.clone();
+    f(&mut s);
+    commit_settings(app, &old, s)
 }
 
 /// Pushes new settings to every part of the app that caches them.
@@ -63,7 +79,10 @@ pub fn apply_settings(app: &AppHandle, s: &Settings) {
     let c = ctl(app);
     let old = c.engine.settings();
     c.engine.set_settings(s.clone());
-    {
+    // Only touch the shortcut engine when shortcuts changed (always the first time), so applying
+    // unrelated settings (e.g. from a sync) can't reset a push-to-talk key that is being held.
+    static SHORTCUTS_CONFIGURED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if old.shortcuts_differ(s) || !SHORTCUTS_CONFIGURED.swap(true, Ordering::SeqCst) {
         let mut e = c.hook.engine.lock();
         e.set_config(s.hotkeys.clone());
         e.set_extra(
@@ -661,6 +680,5 @@ pub async fn export_backup(app: AppHandle) -> Res<String> {
 
 #[tauri::command]
 pub async fn import_backup(app: AppHandle) -> Res<String> {
-    let file = app.state::<Paths>().settings_file.clone();
-    tauri::async_runtime::spawn_blocking(move || crate::backup::import(&app, &file)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || crate::backup::import(&app)).await.map_err(|e| e.to_string())?
 }

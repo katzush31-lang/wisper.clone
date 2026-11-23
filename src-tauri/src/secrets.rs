@@ -29,6 +29,15 @@ pub fn get(provider: &str) -> Option<String> {
     (!v.is_empty()).then_some(v)
 }
 
+/// Stores a value under an arbitrary credential name (best effort, no in-memory fallback).
+/// Used for `previous-<provider>-api-key`: a key that was replaced by the account's key.
+pub fn set_named(account: &str, value: &str) {
+    match keyring::Entry::new(SERVICE, account).map(|e| e.set_password(value)) {
+        Ok(Ok(())) => {}
+        _ => tracing::warn!("couldn't keep a copy of the replaced key in the credential store"),
+    }
+}
+
 pub fn set(provider: &str, key: &str) -> Result<(), String> {
     let key = key.trim();
     let entry = keyring::Entry::new(SERVICE, account(provider)).map_err(|e| e.to_string());

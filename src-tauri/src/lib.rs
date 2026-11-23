@@ -162,6 +162,7 @@ pub fn run() {
             account::account_status,
             account::account_sign_in,
             account::account_sign_out,
+            account::account_cancel_sign_in,
             account::account_sync_now,
             account::account_set_key_storage,
             account::account_devices,

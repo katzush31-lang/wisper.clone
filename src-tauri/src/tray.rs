@@ -57,13 +57,9 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
             "pause" => {
                 // Flip the saved setting, the same way the Settings page does.
                 let c = crate::controller::ControllerState::get(app);
-                let mut settings = c.engine.settings();
-                settings.shortcuts_enabled = !settings.shortcuts_enabled;
-                let paths = app.state::<crate::commands::Paths>();
-                match settings.save(&paths.settings_file) {
-                    Ok(()) => crate::commands::apply_settings(app, &settings),
+                if crate::commands::update_settings(app, |s| s.shortcuts_enabled = !s.shortcuts_enabled).is_err() {
                     // Couldn't save: put the checkbox back to match reality.
-                    Err(_) => sync_shortcuts(app, c.engine.settings().shortcuts_enabled),
+                    sync_shortcuts(app, c.engine.settings().shortcuts_enabled);
                 }
             }
             "update" => {

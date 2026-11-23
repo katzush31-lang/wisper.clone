@@ -137,6 +137,11 @@ impl Controller {
         self.engine.settings()
     }
 
+    /// Not recording and not processing a dictation.
+    pub fn is_idle(&self) -> bool {
+        matches!(*self.phase.lock(), Phase::Idle)
+    }
+
     pub fn is_recording(&self) -> bool {
         matches!(*self.phase.lock(), Phase::Recording(_))
     }
@@ -1038,10 +1043,8 @@ impl Controller {
         } else {
             s.app_styles.push(wisper_core::settings::AppStyle { app_key: app.key.clone(), app_name: app.name.clone(), mode_id: mode, user_set: false });
         }
-        let path = self.data_dir.join("settings.json");
-        if s.save(&path).is_ok() {
-            crate::commands::apply_settings(&self.app, &s);
-        }
+        let styles = s.app_styles;
+        let _ = crate::commands::update_settings(&self.app, |t| t.app_styles = styles);
     }
 
     fn maybe_suggest(self: &Arc<Self>) {

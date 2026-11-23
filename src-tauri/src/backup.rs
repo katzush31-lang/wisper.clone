@@ -46,7 +46,7 @@ pub fn export(app: &AppHandle) -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
-pub fn import(app: &AppHandle, settings_file: &std::path::Path) -> Result<String, String> {
+pub fn import(app: &AppHandle) -> Result<String, String> {
     let Some(path) = app.dialog().file().add_filter("Wisper backup", &["json"]).blocking_pick_file() else {
         return Err("Restore cancelled.".into());
     };
@@ -58,14 +58,13 @@ pub fn import(app: &AppHandle, settings_file: &std::path::Path) -> Result<String
     }
     let c = ControllerState::get(app);
     let db = &c.engine.db;
-    let old = c.engine.settings();
-    let mut settings = b.settings.normalised();
-    // Keep this computer's sync bookkeeping and account choices; stamp what the restore changed.
-    settings.section_times = old.section_times.clone();
-    settings.account = old.account.clone();
-    settings.stamp_changed_sections(&old, chrono::Utc::now().timestamp_millis());
-    settings.save(settings_file).map_err(|e| e.to_string())?;
-    crate::commands::apply_settings(app, &settings);
+    let restored = b.settings;
+    // This computer keeps its own account choices (e.g. where API keys live).
+    crate::commands::update_settings(app, |s| {
+        let account = s.account.clone();
+        *s = restored;
+        s.account = account;
+    })?;
     let mut words = 0;
     for mut e in b.dictionary {
         e.id = 0;

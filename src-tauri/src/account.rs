@@ -85,6 +85,12 @@ impl KeyStore for AppKeyStore {
         let _ = secrets::set(provider, key);
         ControllerState::get(&self.app).engine.set_keys(commands::load_keys());
     }
+
+    /// When the account's key replaces a different local one, the local one is kept here so
+    /// nothing is irrecoverably lost.
+    fn keep_previous(&self, provider: &str, key: &str) {
+        secrets::set_named(&format!("previous-{provider}-api-key"), key);
+    }
 }
 
 // ---------------------------------------------------------------- state
@@ -117,6 +123,8 @@ pub struct Account {
     /// Bumped on every change; a debounced sync only runs if nothing newer came in.
     generation: AtomicU64,
     signing_in: AtomicBool,
+    /// Lets `account_cancel_sign_in` stop the waiting listener at once.
+    cancel_sign_in: Mutex<Option<Arc<tokio::sync::Notify>>>,
     last_focus_sync: Mutex<Option<Instant>>,
 }
 
@@ -133,6 +141,7 @@ pub fn init(app: &AppHandle, db: Arc<Db>, data_dir: std::path::PathBuf) {
         last_error: Mutex::new(None),
         generation: AtomicU64::new(0),
         signing_in: AtomicBool::new(false),
+        cancel_sign_in: Mutex::new(None),
         last_focus_sync: Mutex::new(None),
     }));
 }
@@ -185,7 +194,7 @@ pub fn key_changed(app: &AppHandle, provider: &str, key: &str) {
             let settings = ControllerState::get(&a.app).engine.settings();
             if engine.account().is_some() && settings.account.sync_enabled {
                 // A failure here is fine: the next sync notices the changed key and uploads it.
-                let _ = engine.upload_key(&settings, &provider, &key).await;
+                let _ = engine.upload_key(&provider, &key).await;
             }
         }
     });
@@ -210,7 +219,8 @@ impl Account {
             email: info.as_ref().map(|i| i.email.clone()),
             name: info.as_ref().and_then(|i| i.name.clone()),
             device_id: info.as_ref().map(|i| i.device_id.clone()),
-            key_storage: settings.account.key_storage.as_str(),
+            // Per computer: the engine's choice once made, else whatever the settings mirror says.
+            key_storage: self.engine.as_ref().and_then(|e| e.key_storage()).unwrap_or(settings.account.key_storage).as_str(),
             key_storage_chosen: self.engine.as_ref().map(|e| e.key_storage_chosen()).unwrap_or(false),
             last_sync: self.engine.as_ref().and_then(|e| e.last_sync()),
             sync_error: self.last_error.lock().clone(),
@@ -260,6 +270,12 @@ impl Account {
         match engine.sync(&settings).await {
             Ok(report) => {
                 *self.last_error.lock() = None;
+                // Never change settings in the middle of a recording or while a dictation is
+                // processing: wait until Wisper is idle.
+                let c = ControllerState::get(&self.app);
+                while !c.is_idle() {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
                 self.apply_report(&report);
             }
             Err(e) => {
@@ -319,7 +335,11 @@ impl Account {
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
         let url = engine.client().login_url(&challenge, port);
         self.app.opener().open_url(url, None::<&str>).map_err(|_| "Wisper couldn't open your web browser to sign in.".to_string())?;
-        let code = wait_for_code(listener).await?;
+        let cancel = Arc::new(tokio::sync::Notify::new());
+        *self.cancel_sign_in.lock() = Some(cancel.clone());
+        let code = wait_for_code(listener, &cancel).await;
+        *self.cancel_sign_in.lock() = None;
+        let code = code?;
         engine.complete_sign_in(&code, &verifier, &device_name()).await.map_err(|e| e.message())?;
         Ok(())
     }
@@ -355,7 +375,7 @@ async fn read_callback(sock: &mut tokio::net::TcpStream) -> Option<Result<String
         }
         cloud::Callback::Error(e) => {
             respond(sock, "200 OK", PAGE_CANCELLED).await;
-            Some(Err(if e == "access_denied" { "Sign-in was cancelled.".to_string() } else { format!("Google sign-in didn't complete ({e}). Please try again.") }))
+            Some(Err(cloud::callback_error_message(&e)))
         }
         cloud::Callback::Other => {
             respond(sock, "404 Not Found", "Not found").await;
@@ -366,7 +386,7 @@ async fn read_callback(sock: &mut tokio::net::TcpStream) -> Option<Result<String
 
 /// Waits (up to 5 minutes) for the browser to come back to `http://127.0.0.1:{port}/callback`.
 /// Only `GET /callback` is accepted; the listener is dropped (closed) as soon as it returns.
-async fn wait_for_code(listener: tokio::net::TcpListener) -> Res<String> {
+async fn wait_for_code(listener: tokio::net::TcpListener, cancel: &tokio::sync::Notify) -> Res<String> {
     let wait = async {
         loop {
             let Ok((mut sock, _)) = listener.accept().await else { continue };
@@ -376,7 +396,11 @@ async fn wait_for_code(listener: tokio::net::TcpListener) -> Res<String> {
             }
         }
     };
-    tokio::time::timeout(SIGN_IN_TIMEOUT, wait).await.unwrap_or_else(|_| Err("Sign-in took too long and was stopped. Please try again.".to_string()))
+    tokio::select! {
+        r = tokio::time::timeout(SIGN_IN_TIMEOUT, wait) => r.unwrap_or_else(|_| Err("Sign-in took too long and was stopped. Please try again.".to_string())),
+        // Dropping the listener here closes the port straight away.
+        _ = cancel.notified() => Err("Sign-in was cancelled.".to_string()),
+    }
 }
 
 // ---------------------------------------------------------------- commands
@@ -395,10 +419,19 @@ pub async fn account_sign_in(app: AppHandle) -> Res<AccountStatus> {
 pub async fn account_sign_out(app: AppHandle) -> Res<AccountStatus> {
     let a = account(&app);
     let engine = a.engine()?.clone();
-    let storage = ControllerState::get(&app).engine.settings().account.key_storage;
-    engine.sign_out(storage).await;
+    engine.sign_out().await;
     *a.last_error.lock() = None;
     Ok(a.emit())
+}
+
+/// Stops a sign-in that is waiting for the browser (the listener closes immediately).
+#[tauri::command]
+pub fn account_cancel_sign_in(app: AppHandle) -> AccountStatus {
+    let a = account(&app);
+    if let Some(n) = a.cancel_sign_in.lock().take() {
+        n.notify_one();
+    }
+    a.status()
 }
 
 #[tauri::command]
@@ -414,16 +447,9 @@ pub async fn account_set_key_storage(app: AppHandle, storage: String) -> Res<Acc
     let a = account(&app);
     let engine = a.signed_in_engine()?.clone();
     let to = KeyStorage::parse(&storage).ok_or("Choose either \"local\" or \"cloud\".")?;
-    let c = ControllerState::get(&app);
-    let old = c.engine.settings();
-    let keys_changed = engine.set_key_storage(old.account.key_storage, to).await.map_err(|e| e.message())?;
-    // Remember the choice like any other synced setting.
-    let mut cur = c.engine.settings();
-    cur.account.key_storage = to;
-    cur.stamp_changed_sections(&old, chrono::Utc::now().timestamp_millis());
-    let file = app.state::<Paths>().settings_file.clone();
-    cur.save(&file).map_err(|e| format!("Couldn't save settings: {e}"))?;
-    commands::apply_settings(&app, &cur);
+    // The engine records the choice itself (under its lock); settings only mirror it for the UI.
+    let keys_changed = engine.set_key_storage(to).await.map_err(|e| e.message())?;
+    commands::update_settings(&app, |s| s.account.key_storage = to)?;
     if keys_changed {
         let _ = app.emit("keys-changed", "");
     }
@@ -443,8 +469,7 @@ pub async fn account_remove_device(app: AppHandle, id: String) -> Res<()> {
     let engine = a.signed_in_engine()?.clone();
     if engine.account().map(|i| i.device_id == id).unwrap_or(false) {
         // Removing this very computer is the same as signing out.
-        let storage = ControllerState::get(&app).engine.settings().account.key_storage;
-        engine.sign_out(storage).await;
+        engine.sign_out().await;
         a.emit();
         return Ok(());
     }
@@ -455,8 +480,7 @@ pub async fn account_remove_device(app: AppHandle, id: String) -> Res<()> {
 pub async fn account_delete(app: AppHandle) -> Res<AccountStatus> {
     let a = account(&app);
     let engine = a.signed_in_engine()?.clone();
-    let storage = ControllerState::get(&app).engine.settings().account.key_storage;
-    engine.delete_account(storage).await.map_err(|e| e.message())?;
+    engine.delete_account().await.map_err(|e| e.message())?;
     *a.last_error.lock() = None;
     Ok(a.emit())
 }
@@ -464,4 +488,65 @@ pub async fn account_delete(app: AppHandle) -> Res<AccountStatus> {
 /// For `get_stats`: true when numbers from all computers should be combined.
 pub fn combined_stats(app: &AppHandle) -> bool {
     app.try_state::<Arc<Account>>().map(|a| a.engine.as_ref().map(|e| e.account().is_some()).unwrap_or(false)).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::TcpStream;
+
+    /// Sends one raw request to the listener and returns the reply text.
+    async fn request(port: u16, line: &str) -> String {
+        let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        s.write_all(format!("{line}\r\nHost: x\r\n\r\n").as_bytes()).await.unwrap();
+        let mut out = String::new();
+        let _ = s.read_to_string(&mut out).await;
+        out
+    }
+
+    async fn listener() -> (tokio::net::TcpListener, u16) {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let p = l.local_addr().unwrap().port();
+        (l, p)
+    }
+
+    #[tokio::test]
+    async fn only_get_callback_with_a_code_finishes_sign_in() {
+        let (l, port) = listener().await;
+        let cancel = Arc::new(tokio::sync::Notify::new());
+        let c2 = cancel.clone();
+        let waiting = tokio::spawn(async move { wait_for_code(l, &c2).await });
+        // Noise is answered 404 and ignored.
+        assert!(request(port, "GET /favicon.ico HTTP/1.1").await.starts_with("HTTP/1.1 404"));
+        assert!(request(port, "POST /callback?code=evil HTTP/1.1").await.starts_with("HTTP/1.1 404"));
+        let page = request(port, "GET /callback?code=abc123 HTTP/1.1").await;
+        assert!(page.starts_with("HTTP/1.1 200") && page.contains("signed in"));
+        assert_eq!(waiting.await.unwrap(), Ok("abc123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn google_failure_and_cancelled_callbacks_stop_waiting_with_plain_messages() {
+        for (query, message) in [("error=google_failed", "Google sign-in didn't work. Please try again."), ("error=access_denied", "Sign-in was cancelled.")] {
+            let (l, port) = listener().await;
+            let cancel = Arc::new(tokio::sync::Notify::new());
+            let c2 = cancel.clone();
+            let waiting = tokio::spawn(async move { wait_for_code(l, &c2).await });
+            request(port, &format!("GET /callback?{query} HTTP/1.1")).await;
+            assert_eq!(waiting.await.unwrap(), Err(message.to_string()));
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_stops_the_listener_immediately() {
+        let (l, port) = listener().await;
+        let cancel = Arc::new(tokio::sync::Notify::new());
+        let c2 = cancel.clone();
+        let waiting = tokio::spawn(async move { wait_for_code(l, &c2).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.notify_one();
+        let r = tokio::time::timeout(Duration::from_secs(2), waiting).await.expect("returns at once").unwrap();
+        assert_eq!(r, Err("Sign-in was cancelled.".to_string()));
+        // The port is closed again.
+        assert!(TcpStream::connect(("127.0.0.1", port)).await.is_err());
+    }
 }

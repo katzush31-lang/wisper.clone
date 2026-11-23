@@ -282,7 +282,6 @@ struct Raw {
     http: reqwest::Client,
     base: String,
     access: String,
-    refresh: String,
 }
 
 async fn raw_refresh(base: &str, refresh: &str) -> (u16, Value) {
@@ -300,7 +299,6 @@ impl Raw {
             http: reqwest::Client::new(),
             base: base.to_string(),
             access: body["access_token"].as_str().unwrap().to_string(),
-            refresh: body["refresh_token"].as_str().unwrap().to_string(),
         }
     }
 
