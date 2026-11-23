@@ -61,6 +61,12 @@ impl SyncReport {
     /// Applies the settings part of the report. Returns true if the settings changed and must be saved.
     pub fn apply_to_settings(&self, s: &mut Settings) -> bool {
         let before = s.clone();
+        if self.first_merge {
+            // First sign-in: the account's settings win outright, whatever this computer's change times say.
+            for name in self.remote_sections.keys() {
+                s.section_times.remove(name);
+            }
+        }
         s.apply_remote_sections(&self.remote_sections);
         for (name, t) in &self.stamped {
             let e = s.section_times.entry(name.clone()).or_insert(0);
@@ -374,7 +380,7 @@ impl SyncEngine {
                     self.set_meta(&key_hash_meta(p), &hash_hex(&l))?;
                 }
                 (Some(r), Some(l)) => {
-                    let edited_here = last.map(|h| h != hash_hex(&l)).unwrap_or(false);
+                    let edited_here = last.as_ref().map(|h| *h != hash_hex(&l)).unwrap_or(false);
                     if edited_here {
                         self.client.put_key(p, &l).await?;
                         self.set_meta(&key_hash_meta(p), &hash_hex(&l))?;

@@ -532,16 +532,19 @@ async fn s05_local_key_storage_never_uploads() {
     assert_eq!(count("SELECT COUNT(*) FROM api_keys WHERE user_id = ?", &[&user_id(5)]), 0);
     assert_nowhere_in_d1("sk-ant-only-on-b-1234567890");
 
-    // Switching to Cloud later uploads (encrypted); switching back removes them from the account
-    // but keeps this computer's copies.
+    // Switching to Cloud later uploads (encrypted). Switching back to Local only stops THIS
+    // computer syncing keys: the account's copies stay until they are removed explicitly.
     a.choose(KeyStorage::Cloud).await;
     assert_eq!(count("SELECT COUNT(*) FROM api_keys WHERE user_id = ?", &[&user_id(5)]), 2);
     let ct = q("SELECT ciphertext FROM api_keys WHERE user_id = ? AND provider = 'openai'", &[&user_id(5)])[0][0].as_str().unwrap().to_string();
     assert_ne!(ct, KEY_OPENAI);
     assert_nowhere_in_d1(KEY_OPENAI);
     a.choose(KeyStorage::Local).await;
-    assert_eq!(count("SELECT COUNT(*) FROM api_keys WHERE user_id = ?", &[&user_id(5)]), 0);
+    assert_eq!(count("SELECT COUNT(*) FROM api_keys WHERE user_id = ?", &[&user_id(5)]), 2, "account keys remain after switching to Local");
     assert_eq!(a.keys.get("openai").as_deref(), Some(KEY_OPENAI));
+    a.engine.remove_cloud_keys().await.unwrap();
+    assert_eq!(count("SELECT COUNT(*) FROM api_keys WHERE user_id = ?", &[&user_id(5)]), 0);
+    assert_eq!(a.keys.get("openai").as_deref(), Some(KEY_OPENAI), "local copy kept");
 }
 
 #[tokio::test]

@@ -431,8 +431,13 @@ async fn switching_storage_moves_keys_as_documented() {
     a.choose(KeyStorage::Cloud).await;
     a.set_key("anthropic", KEY_A).await;
     assert_eq!(fake.server_keys().get("anthropic").map(String::as_str), Some(KEY_A));
-    // Cloud -> Local: removed from the account, kept here.
+    // Cloud -> Local: this computer stops syncing keys; its copy and the account's both stay.
     a.choose(KeyStorage::Local).await;
+    assert_eq!(fake.calls("DELETE /v1/keys"), 0);
+    assert_eq!(fake.server_keys().get("anthropic").map(String::as_str), Some(KEY_A));
+    assert_eq!(a.keys.get("anthropic").as_deref(), Some(KEY_A));
+    // Removing the account's keys is a separate, explicit action; local copies are kept.
+    a.engine.remove_cloud_keys().await.unwrap();
     assert!(fake.server_keys().is_empty());
     assert_eq!(a.keys.get("anthropic").as_deref(), Some(KEY_A));
     // Local -> Cloud: this computer's keys are uploaded.
@@ -765,16 +770,15 @@ async fn a_stale_cloud_snapshot_cannot_reupload_keys_after_switching_to_local() 
     a.set_key("anthropic", KEY_A).await;
     let stale = a.settings.clone(); // a sync that read settings before the switch
     assert_eq!(stale.account.key_storage, KeyStorage::Cloud);
-    // The switch and a key save race; whichever runs first, the account ends up without keys.
+    // The switch and a key save race; they are serialized by the engine lock.
     let (switched, uploaded) = tokio::join!(a.engine.set_key_storage(KeyStorage::Local), a.engine.upload_key("openai", KEY_B));
     switched.unwrap();
     uploaded.unwrap();
-    assert!(fake.server_keys().is_empty());
-    // Later work that still carries the stale Cloud snapshot is ignored too.
+    // Once switched, nothing more is uploaded even from a stale Cloud snapshot.
     let puts = fake.calls("PUT /v1/keys/anthropic") + fake.calls("PUT /v1/keys/openai");
     a.engine.sync(&stale).await.unwrap();
-    a.engine.upload_key("anthropic", KEY_A).await.unwrap();
-    assert!(fake.server_keys().is_empty());
+    a.engine.upload_key("anthropic", "sk-ant-changed-after-switching-0000").await.unwrap();
+    assert_eq!(fake.server_keys().get("anthropic").map(String::as_str), Some(KEY_A));
     assert_eq!(fake.calls("PUT /v1/keys/anthropic") + fake.calls("PUT /v1/keys/openai"), puts);
 }
 
@@ -860,4 +864,43 @@ async fn uploaded_items_are_marked_clean() {
     a.sync().await;
     assert!(a.db.items_dirty().unwrap().is_empty());
     assert_eq!(fake.st.lock().unwrap().items.len(), 1);
+}
+
+#[tokio::test]
+async fn a_new_account_receives_this_computers_words_and_snippets() {
+    let fake = Fake::start().await;
+    let mut a = Computer::new(&fake.url());
+    a.db.dict_add(&DictEntry::user("Menachem")).unwrap();
+    a.db.snippet_save(&Snippet { id: 0, trigger: "sig".into(), expansion: "Best".into(), uses: 0 }).unwrap();
+    a.sign_in("u1").await;
+    a.engine.sign_out().await;
+    a.sign_in("u2").await;
+    let st = fake.st.lock().unwrap();
+    for user in ["u1", "u2"] {
+        assert_eq!(st.items.keys().filter(|(u, _, _)| u == user).count(), 2, "{user} has the word and the snippet");
+    }
+}
+
+#[tokio::test]
+async fn removed_or_replaced_keys_are_stashed_once_so_they_can_be_recovered() {
+    let fake = Fake::start().await;
+    let (mut a, mut b) = (Computer::new(&fake.url()), Computer::new(&fake.url()));
+    a.sign_in("u1").await;
+    a.choose(KeyStorage::Cloud).await;
+    a.set_key("anthropic", KEY_A).await;
+    b.sign_in("u1").await;
+    b.choose(KeyStorage::Cloud).await;
+    // Another computer removes the key; B blanks its synced copy but stashes it first.
+    a.set_key("anthropic", "").await;
+    b.sync().await;
+    assert!(b.keys.get("anthropic").is_none());
+    assert_eq!(b.keys.get("previous-anthropic").as_deref(), Some(KEY_A));
+    // A later rotation (key synced before) does not overwrite the stashed original.
+    a.set_key("anthropic", KEY_B).await;
+    b.sync().await;
+    a.set_key("anthropic", "sk-ant-rotated-again-0000000000").await;
+    b.keys.set("anthropic", KEY_B);
+    b.sync().await;
+    assert_eq!(b.keys.get("anthropic").as_deref(), Some("sk-ant-rotated-again-0000000000"));
+    assert_eq!(b.keys.get("previous-anthropic").as_deref(), Some(KEY_A));
 }
