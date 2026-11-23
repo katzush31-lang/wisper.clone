@@ -76,7 +76,7 @@ describe("items (dictionary, snippets)", () => {
     await app.call("/v1/items", { token: s.access, body: { items: [item({ data: { word: "stale" }, updated_at: 900 })] } });
     await app.call("/v1/items", { token: s.access, body: { items: [item({ data: { word: "same-time" }, updated_at: 1000 })] } });
     let items = (await jsonOf(await app.call("/v1/items", { token: s.access }))).items;
-    expect(items).toEqual([{ kind: "dictionary", uid: "u1", data: { word: "zechus" }, updated_at: 1000, deleted: false }]);
+    expect(items).toMatchObject([{ kind: "dictionary", uid: "u1", data: { word: "zechus" }, updated_at: 1000, deleted: false }]);
 
     await app.call("/v1/items", { token: s.access, body: { items: [item({ data: { word: "Shabbos" }, updated_at: 2000 })] } });
     items = (await jsonOf(await app.call("/v1/items", { token: s.access }))).items;
@@ -115,12 +115,16 @@ describe("items (dictionary, snippets)", () => {
     expect(items.find((i: any) => i.kind === "snippet").data.trigger).toBe("addr");
   });
 
-  it("returns only items since a time, plus the server clock", async () => {
+  it("returns only items written since the cursor (server clock), plus now", async () => {
     const app = new App();
     const s = await app.signIn();
-    await app.call("/v1/items", { token: s.access, body: { items: [item({ uid: "a", updated_at: 100 }), item({ uid: "b", updated_at: 200 }), item({ uid: "c", updated_at: 300 })] } });
-    const r = await jsonOf(await app.call("/v1/items?since=200", { token: s.access }));
+    await app.call("/v1/items", { token: s.access, body: { items: [item({ uid: "a", updated_at: 100 })] } });
+    const mid = (await jsonOf(await app.call("/v1/items", { token: s.access }))).now;
+    await new Promise((r) => setTimeout(r, 5));
+    await app.call("/v1/items", { token: s.access, body: { items: [item({ uid: "b", updated_at: 200 }), item({ uid: "c", updated_at: 300 })] } });
+    const r = await jsonOf(await app.call(`/v1/items?since=${mid + 1}`, { token: s.access }));
     expect(r.items.map((i: any) => i.uid)).toEqual(["b", "c"]);
+    expect(r.items[0].server_at).toBeGreaterThan(mid);
     expect(Math.abs(r.now - Date.now())).toBeLessThan(5000);
     expect((await app.call("/v1/items?since=abc", { token: s.access })).status).toBe(400);
     expect((await app.call("/v1/items?since=-1", { token: s.access })).status).toBe(400);
@@ -166,7 +170,8 @@ describe("stats", () => {
 
     const rows = (await jsonOf(await app.call("/v1/stats", { token: s.access }))).rows;
     expect(rows.map((r: any) => r.uid)).toEqual(["d1", "d2", "d3"]);
-    expect(rows[0]).toEqual({ uid: "d1", device_id: s.deviceId, created_at: 5000, words: 42, duration_ms: 12_000, app: "Notepad", fixes: 2 });
+    expect(rows[0]).toMatchObject({ uid: "d1", device_id: s.deviceId, created_at: 5000, words: 42, duration_ms: 12_000, app: "Notepad", fixes: 2 });
+    expect(typeof rows[0].server_at).toBe("number");
     expect(rows[2].words).toBe(42); // the first d3 row in the batch is kept
   });
 
@@ -180,11 +185,16 @@ describe("stats", () => {
     expect(rows[0].device_id).toBe(pc1.deviceId);
   });
 
-  it("filters by since (created_at)", async () => {
+  it("filters by since on the server clock, not created_at", async () => {
     const app = new App();
     const s = await app.signIn();
-    await app.call("/v1/stats", { token: s.access, body: { rows: [row({ uid: "a", created_at: 100 }), row({ uid: "b", created_at: 200 })] } });
-    const rows = (await jsonOf(await app.call("/v1/stats?since=150", { token: s.access }))).rows;
+    await app.call("/v1/stats", { token: s.access, body: { rows: [row({ uid: "a", created_at: 100 })] } });
+    const first = await jsonOf(await app.call("/v1/stats", { token: s.access }));
+    expect(first.more).toBeUndefined();
+    expect(Math.abs(first.now - Date.now())).toBeLessThan(5000);
+    await new Promise((r) => setTimeout(r, 5));
+    await app.call("/v1/stats", { token: s.access, body: { rows: [row({ uid: "b", created_at: 50 })] } });
+    const rows = (await jsonOf(await app.call(`/v1/stats?since=${first.now + 1}`, { token: s.access }))).rows;
     expect(rows.map((r: any) => r.uid)).toEqual(["b"]);
     expect((await app.call("/v1/stats?since=x", { token: s.access })).status).toBe(400);
   });
@@ -255,5 +265,68 @@ describe("delete account", () => {
     const again = await app.signIn({ sub: "a", email: "a@example.com" });
     expect(again.userId).not.toBe(first.userId);
     expect(await jsonOf(await app.call("/v1/keys", { token: again.access }))).toEqual({ openai: null, anthropic: null });
+  });
+});
+
+describe("server-clock sync cursors", () => {
+  it("a row written with an old client timestamp still reaches a device whose cursor is later", async () => {
+    const app = new App();
+    const pc1 = await app.signIn({ sub: "u", email: "u@example.com" }, "PC 1");
+    const pc2 = await app.signIn({ sub: "u", email: "u@example.com" }, "PC 2");
+    const cursor = (await jsonOf(await app.call("/v1/items", { token: pc2.access }))).now;
+    const statsCursor = (await jsonOf(await app.call("/v1/stats", { token: pc2.access }))).now;
+    await new Promise((r) => setTimeout(r, 5));
+
+    // PC 1 has a badly lagging clock: its timestamps are years before PC 2's cursor.
+    await app.call("/v1/items", { token: pc1.access, body: { items: [{ kind: "snippet", uid: "old", data: { t: 1 }, updated_at: 1000 }] } });
+    await app.call("/v1/stats", { token: pc1.access, body: { rows: [{ uid: "old", created_at: 1000, words: 3, duration_ms: 10, app: "", fixes: 0 }] } });
+
+    const items = (await jsonOf(await app.call(`/v1/items?since=${cursor}`, { token: pc2.access }))).items;
+    expect(items.map((i: any) => i.uid)).toEqual(["old"]);
+    expect(items[0].updated_at).toBe(1000);
+    const rows = (await jsonOf(await app.call(`/v1/stats?since=${statsCursor}`, { token: pc2.access }))).rows;
+    expect(rows.map((r: any) => r.uid)).toEqual(["old"]);
+    expect(rows[0].created_at).toBe(1000);
+  });
+
+  it("an update that loses last-write-wins does not move server_at; one that wins does", async () => {
+    const app = new App();
+    const s = await app.signIn();
+    const it = (updated_at: number) => ({ kind: "dictionary", uid: "u", data: {}, updated_at });
+    await app.call("/v1/items", { token: s.access, body: { items: [it(2000)] } });
+    const a = (await jsonOf(await app.call("/v1/items", { token: s.access }))).items[0].server_at;
+    await new Promise((r) => setTimeout(r, 5));
+    await app.call("/v1/items", { token: s.access, body: { items: [it(1000)] } });
+    expect((await jsonOf(await app.call("/v1/items", { token: s.access }))).items[0].server_at).toBe(a);
+    await app.call("/v1/items", { token: s.access, body: { items: [it(3000)] } });
+    expect((await jsonOf(await app.call("/v1/items", { token: s.access }))).items[0].server_at).toBeGreaterThan(a);
+  });
+
+  it("stats paging with more / since returns every row exactly once", async () => {
+    const app = new App();
+    const s = await app.signIn();
+    const total = 20_050;
+    // Seed directly with distinct server_at values (the API itself caps a call at 1000 rows).
+    await env.DB.prepare(
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+       INSERT INTO stats (user_id, uid, device_id, created_at, words, duration_ms, app, fixes, server_at)
+       SELECT ?, 'r' || i, 'dev', 5, 1, 1, '', 0, 1000 + i FROM n`,
+    ).bind(total, s.userId).run();
+
+    const seen = new Set<string>();
+    let since = 0;
+    let pages = 0;
+    for (;;) {
+      const r = await jsonOf(await app.call(`/v1/stats?since=${since}`, { token: s.access }));
+      pages++;
+      for (const row of r.rows) seen.add(row.uid);
+      expect(typeof r.now).toBe("number");
+      if (!r.more) break;
+      expect(r.rows).toHaveLength(20_000);
+      since = r.rows[r.rows.length - 1].server_at;
+      expect(pages).toBeLessThan(5);
+    }
+    expect(pages).toBe(2);
+    expect(seen.size).toBe(total);
   });
 });

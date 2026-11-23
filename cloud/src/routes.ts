@@ -191,16 +191,17 @@ export async function getItems(req: Request, env: Env): Promise<Response> {
   if (!Number.isInteger(since) || since < 0) throw badRequest("since must be a whole number of milliseconds.");
 
   const now = Date.now();
-  // Inclusive (>=) on purpose: merging is idempotent, and it cannot miss a same-millisecond write.
-  const rows = await all<{ kind: string; uid: string; data: string | null; updated_at: number; deleted: number }>(
+  // Cursor is the server's clock (server_at), not the client's updated_at. Inclusive (>=) on purpose:
+  // merging is idempotent, and it cannot miss a same-millisecond write.
+  const rows = await all<{ kind: string; uid: string; data: string | null; updated_at: number; deleted: number; server_at: number }>(
     env.DB,
-    "SELECT kind, uid, data, updated_at, deleted FROM items WHERE user_id = ? AND updated_at >= ? ORDER BY updated_at",
+    "SELECT kind, uid, data, updated_at, deleted, server_at FROM items WHERE user_id = ? AND server_at >= ? ORDER BY server_at, kind, uid",
     userId, since,
   );
   return json({
     items: rows.map((r) => ({
       kind: r.kind, uid: r.uid, data: r.data === null ? null : JSON.parse(r.data),
-      updated_at: r.updated_at, deleted: r.deleted === 1,
+      updated_at: r.updated_at, deleted: r.deleted === 1, server_at: r.server_at,
     })),
     now,
   });
@@ -235,14 +236,14 @@ export async function postItems(req: Request, env: Env): Promise<Response> {
   if (rows.length > 0) {
     await exec(
       env.DB,
-      `INSERT INTO items (user_id, kind, uid, data, updated_at, deleted)
+      `INSERT INTO items (user_id, kind, uid, data, updated_at, deleted, server_at)
        SELECT ?, json_extract(j.value, '$.kind'), json_extract(j.value, '$.uid'), json_extract(j.value, '$.data'),
-              json_extract(j.value, '$.updated_at'), json_extract(j.value, '$.deleted')
+              json_extract(j.value, '$.updated_at'), json_extract(j.value, '$.deleted'), ?
        FROM json_each(?) AS j WHERE true
        ON CONFLICT(user_id, kind, uid) DO UPDATE SET
-         data = excluded.data, updated_at = excluded.updated_at, deleted = excluded.deleted
+         data = excluded.data, updated_at = excluded.updated_at, deleted = excluded.deleted, server_at = excluded.server_at
        WHERE excluded.updated_at > items.updated_at`,
-      userId, JSON.stringify(rows),
+      userId, now, JSON.stringify(rows),
     );
   }
   return json({ received: rows.length, now });
@@ -275,11 +276,11 @@ export async function postStats(req: Request, env: Env): Promise<Response> {
   if (rows.length > 0) {
     inserted = await exec(
       env.DB,
-      `INSERT OR IGNORE INTO stats (user_id, uid, device_id, created_at, words, duration_ms, app, fixes)
+      `INSERT OR IGNORE INTO stats (user_id, uid, device_id, created_at, words, duration_ms, app, fixes, server_at)
        SELECT ?, json_extract(j.value, '$.uid'), ?, json_extract(j.value, '$.created_at'), json_extract(j.value, '$.words'),
-              json_extract(j.value, '$.duration_ms'), json_extract(j.value, '$.app'), json_extract(j.value, '$.fixes')
+              json_extract(j.value, '$.duration_ms'), json_extract(j.value, '$.app'), json_extract(j.value, '$.fixes'), ?
        FROM json_each(?) AS j WHERE true`,
-      userId, deviceId, JSON.stringify(rows),
+      userId, deviceId, Date.now(), JSON.stringify(rows),
     );
   }
   return json({ received: rows.length, inserted });
@@ -290,13 +291,17 @@ export async function getStats(req: Request, env: Env): Promise<Response> {
   const sinceRaw = new URL(req.url).searchParams.get("since");
   const since = sinceRaw === null ? 0 : Number(sinceRaw);
   if (!Number.isInteger(since) || since < 0) throw badRequest("since must be a whole number of milliseconds.");
-  // Oldest first and inclusive, so a client can page by passing the newest created_at it received.
-  const rows = await all(
+  const now = Date.now();
+  // Server clock cursor, oldest first. Ask for one extra row to know whether the page was capped.
+  // To continue, call again with since = the last row's server_at (inclusive, so nothing is missed).
+  const found = await all<Record<string, unknown>>(
     env.DB,
-    `SELECT uid, device_id, created_at, words, duration_ms, app, fixes FROM stats
-     WHERE user_id = ? AND created_at >= ? ORDER BY created_at, uid LIMIT ?`,
-    userId, since, STATS_PAGE,
+    `SELECT uid, device_id, created_at, words, duration_ms, app, fixes, server_at FROM stats
+     WHERE user_id = ? AND server_at >= ? ORDER BY server_at, uid LIMIT ?`,
+    userId, since, STATS_PAGE + 1,
   );
-  return json({ rows });
+  const more = found.length > STATS_PAGE;
+  const rows = more ? found.slice(0, STATS_PAGE) : found;
+  return json(more ? { rows, now, more: true } : { rows, now });
 }
 

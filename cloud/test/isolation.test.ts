@@ -37,7 +37,7 @@ describe("user isolation", () => {
     expect(await jsonOf(await app.call("/v1/keys", { token: bob.access }))).toEqual({ openai: null, anthropic: null });
     expect(await jsonOf(await app.call("/v1/settings", { token: bob.access }))).toEqual({ sections: {} });
     expect((await jsonOf(await app.call("/v1/items", { token: bob.access }))).items).toEqual([]);
-    expect(await jsonOf(await app.call("/v1/stats", { token: bob.access }))).toEqual({ rows: [] });
+    expect((await jsonOf(await app.call("/v1/stats", { token: bob.access }))).rows).toEqual([]);
     const devices = await jsonOf(await app.call("/v1/devices", { token: bob.access }));
     expect(devices).toHaveLength(1);
     expect(devices[0].id).toBe(bob.deviceId);
@@ -60,6 +60,7 @@ describe("user isolation", () => {
     const items = (await jsonOf(await app.call("/v1/items", { token: alice.access }))).items;
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ data: { word: "alice-word" }, deleted: false, updated_at: 1000 });
+    expect(typeof items[0].server_at).toBe("number");
     const stats = (await jsonOf(await app.call("/v1/stats", { token: alice.access }))).rows;
     expect(stats).toHaveLength(1);
     expect(stats[0]).toMatchObject({ words: 10, app: "alice-app" });
