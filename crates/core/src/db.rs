@@ -27,6 +27,9 @@ pub enum Status {
     Cancelled,
     /// No speech was detected.
     Empty,
+    /// The speech detector heard nothing. Hidden from History; kept 24 hours in case it
+    /// misjudged very quiet speech, then deleted.
+    Silent,
 }
 
 impl Status {
@@ -40,6 +43,7 @@ impl Status {
             Status::Failed => "failed",
             Status::Cancelled => "cancelled",
             Status::Empty => "empty",
+            Status::Silent => "silent",
         }
     }
 
@@ -52,6 +56,7 @@ impl Status {
             "queued" => Status::Queued,
             "cancelled" => Status::Cancelled,
             "empty" => Status::Empty,
+            "silent" => Status::Silent,
             _ => Status::Failed,
         }
     }
@@ -761,6 +766,9 @@ impl Db {
         if let Some(s) = &q.status {
             sql.push_str(" AND status = ?");
             args.push(Box::new(s.clone()));
+        } else {
+            // Recordings with no speech heard stay out of History, search and stats.
+            sql.push_str(" AND status != 'silent'");
         }
         if let Some(list) = q.exclude_status.as_ref().filter(|l| !l.is_empty()) {
             sql.push_str(&format!(" AND status NOT IN ({})", vec!["?"; list.len()].join(",")));
@@ -818,14 +826,25 @@ impl Db {
     }
 
     /// Old "No speech" rows where the speech detector never found speech in any piece:
-    /// they hold nothing, so they can go. (Rows where it did hear speech stay.)
-    pub fn silent_empty_items(&self) -> DbResult<Vec<String>> {
+    /// they are hidden like new ones (see `Status::Silent`). Rows where it did hear speech stay.
+    pub fn hide_silent_empty_items(&self) -> DbResult<usize> {
+        self.c().execute(
+            "UPDATE dictations SET status='silent' WHERE status='empty' AND (raw_text IS NULL OR TRIM(raw_text)='') \
+             AND NOT EXISTS (SELECT 1 FROM segments s WHERE s.dictation_id=dictations.id AND s.has_speech=1)",
+            [],
+        )
+    }
+
+    #[cfg(test)]
+    pub fn set_created_at_for_test(&self, id: &str, ms: i64) {
+        let _ = self.c().execute("UPDATE dictations SET created_at=?2 WHERE id=?1", params![id, ms]);
+    }
+
+    /// Hidden no-speech recordings older than the cutoff.
+    pub fn silent_older_than(&self, cutoff_ms: i64) -> DbResult<Vec<String>> {
         let conn = self.c();
-        let mut stmt = conn.prepare(
-            "SELECT id FROM dictations d WHERE status='empty' AND (raw_text IS NULL OR TRIM(raw_text)='') \
-             AND NOT EXISTS (SELECT 1 FROM segments s WHERE s.dictation_id=d.id AND s.has_speech=1)",
-        )?;
-        let rows = stmt.query_map([], |r| r.get(0))?;
+        let mut stmt = conn.prepare("SELECT id FROM dictations WHERE status='silent' AND created_at < ?1")?;
+        let rows = stmt.query_map([cutoff_ms], |r| r.get(0))?;
         rows.collect()
     }
 

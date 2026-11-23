@@ -247,3 +247,12 @@
 .home-chip-label {
   white-space: nowrap;
 }
+.home-silent {
+  margin-top: 28px;
+  text-align: center;
+  font-size: 13px;
+}
+.home-silent-list {
+  margin-top: 10px;
+  text-align: left;
+}

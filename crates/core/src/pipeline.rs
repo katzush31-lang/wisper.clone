@@ -397,8 +397,10 @@ impl Engine {
         let id = rec.id.clone();
         let stop_at = Instant::now();
         if !rec.heard_speech {
-            // The speech detector found no speech in any piece: nothing worth keeping.
-            self.discard_silent(&id, &rec.pcm);
+            // The speech detector found no speech in any piece: hide it, and keep the audio
+            // for 24 hours in case very quiet speech was misjudged.
+            let _ = self.db.set_status(&id, Status::Silent);
+            self.archive_audio_later(&id, &rec.pcm);
             return Ok(Outcome::NoSpeech { id });
         }
         let _ = self.db.set_status(&id, Status::Transcribing);
@@ -844,7 +846,9 @@ impl Engine {
         let raw = join_segments(&texts);
         let _ = self.db.set_raw_text(id, &raw);
         if raw.trim().is_empty() {
-            let _ = self.db.set_status(id, Status::Empty);
+            // Still nothing: a hidden silent recording goes back to hidden.
+            let again = if item.status == "silent" { Status::Silent } else { Status::Empty };
+            let _ = self.db.set_status(id, again);
             return Ok(Outcome::NoSpeech { id: id.into() });
         }
         let _ = self.db.set_status(id, Status::Cleaning);
@@ -888,22 +892,16 @@ impl Engine {
         n
     }
 
-    /// Removes a recording that holds no speech (row, segments and audio file) at once.
-    /// Only for recordings where the speech detector heard nothing in any piece; anything
-    /// that had speech is kept even if the transcript came back empty.
-    fn discard_silent(&self, id: &str, pcm: &Path) {
-        if let Ok(Some(path)) = self.db.delete(id) {
-            let _ = std::fs::remove_file(path);
-        }
-        let _ = std::fs::remove_file(pcm);
-        let _ = std::fs::remove_file(pcm.with_extension("flac"));
-    }
+    /// Hours a hidden no-speech recording is kept before it is deleted.
+    pub const SILENT_KEEP_MS: i64 = 24 * 3600 * 1000;
 
-    /// Clears out "No speech" rows left by older versions (nothing was ever heard in them).
-    /// Returns how many were removed.
+    /// Housekeeping for hidden no-speech recordings: rows left by older versions are hidden
+    /// too, and anything older than 24 hours is deleted with its audio. Returns how many
+    /// were deleted.
     pub fn purge_silent_items(&self) -> usize {
+        let _ = self.db.hide_silent_empty_items();
         let mut n = 0;
-        for id in self.db.silent_empty_items().unwrap_or_default() {
+        for id in self.db.silent_older_than(now_ms() - Self::SILENT_KEEP_MS).unwrap_or_default() {
             if self.is_active(&id) {
                 continue;
             }
@@ -1354,12 +1352,14 @@ impl Session {
         }
         let db = &self.engine.db;
         let _ = db.set_recording_info(&self.id, duration_ms as i64, Some(&self.pcm.to_string_lossy()));
-        if duration_ms < 600 || !self.segmenter.heard_speech() {
-            // Accidental taps and recordings with no speech in them: nothing worth keeping.
+        if duration_ms < 600 {
+            // Accidental taps: nothing worth keeping.
             let _ = db.delete(&self.id);
             let _ = std::fs::remove_file(&self.pcm);
         } else {
-            let _ = db.set_status(&self.id, Status::Cancelled);
+            // No speech heard: hidden (and deleted after 24 hours), like a silent dictation.
+            let st = if self.segmenter.heard_speech() { Status::Cancelled } else { Status::Silent };
+            let _ = db.set_status(&self.id, st);
             let engine = self.engine.clone();
             let id = self.id.clone();
             let pcm = self.pcm.clone();

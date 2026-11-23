@@ -166,7 +166,9 @@ export type HistoryStatus =
   | "queued"
   | "failed"
   | "cancelled"
-  | "empty";
+  | "empty"
+  /** no speech heard: hidden from History, kept 24 hours */
+  | "silent";
 
 export interface HistoryItem {
   id: string;

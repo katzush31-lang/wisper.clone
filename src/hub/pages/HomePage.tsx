@@ -28,6 +28,8 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
   const [cardDismissed, setCardDismissed] = useState(readDismissed);
   const [stats, setStats] = useState<Stats | null>(null);
   const [keys, setKeys] = useState<KeyState | null>(null);
+  const [silent, setSilent] = useState<HistoryItem[]>([]);
+  const [showSilent, setShowSilent] = useState(false);
   const [waiting, setWaiting] = useState<HistoryItem[]>([]);
   const [explain, setExplain] = useState(false);
   const [items, setItems] = useState<HistoryItem[]>([]);
@@ -69,6 +71,10 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
     if (grouped) {
       Promise.all([api.listHistory({ status: "queued", limit: 500 }), api.listHistory({ status: "failed", limit: 500 })])
         .then(([a, b]) => setWaiting([...a, ...b].sort((x, y) => y.createdAt - x.createdAt)))
+        .catch(() => {});
+      api
+        .listHistory({ status: "silent", limit: 200 })
+        .then(setSilent)
         .catch(() => {});
     } else {
       setWaiting([]);
@@ -118,7 +124,7 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
     return out;
   }, [items]);
 
-  const opened = items.find((i) => i.id === openId) ?? waiting.find((i) => i.id === openId) ?? null;
+  const opened = items.find((i) => i.id === openId) ?? silent.find((i) => i.id === openId) ?? waiting.find((i) => i.id === openId) ?? null;
   const name = settings?.userName?.trim();
   const shortcut = settings ? comboLabel(settings.hotkeys.dictate[0]) : "your shortcut";
   const keysMissing = needKeys(keys, settings?.providers.cleanupProvider);
@@ -252,6 +258,21 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
           >
             Load more
           </button>
+        </div>
+      )}
+
+      {silent.length > 0 && !query.trim() && !date && (
+        <div className="home-silent">
+          <button className="link-btn muted" onClick={() => setShowSilent((v) => !v)} aria-expanded={showSilent}>
+            {showSilent ? "Hide" : "Show"} recordings where no speech was heard (last 24 hours)
+          </button>
+          {showSilent && (
+            <div className="list home-silent-list">
+              {silent.map((it) => (
+                <HistoryRow key={it.id} item={it} onOpen={() => setOpenId(it.id)} />
+              ))}
+            </div>
+          )}
         </div>
       )}
 

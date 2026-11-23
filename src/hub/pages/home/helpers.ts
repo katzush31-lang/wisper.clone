@@ -29,6 +29,8 @@ export function statusInfo(i: HistoryItem): StatusInfo | null {
       return { label: "Cancelled", tone: "neutral", reason: "You cancelled this one. The recording is still saved." };
     case "empty":
       return { label: "No speech", tone: "neutral", reason: "No speech was heard in this recording." };
+    case "silent":
+      return { label: "No speech heard", tone: "neutral", reason: "No speech was heard. If you did speak, choose Try again. It is deleted after 24 hours." };
     case "transcribing":
     case "cleaning":
     case "recording":

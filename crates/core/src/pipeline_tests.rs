@@ -219,11 +219,63 @@ async fn silence_is_not_sent_anywhere() {
     let out = h.engine.process(rec, &no_progress()).await.unwrap();
     assert!(matches!(out, Outcome::NoSpeech { .. }));
     assert!(h.stt.requests.lock().unwrap().is_empty());
-    // Nothing was heard: the row and the audio are gone straight away.
+    // Nothing was heard: hidden from History at once, but kept for 24 hours.
+    let item = h.engine.db.get(&id).unwrap().unwrap();
+    assert_eq!(item.status, "silent");
+    let listed = h.engine.db.list(&crate::db::HistoryQuery::default()).unwrap();
+    assert!(listed.iter().all(|i| i.id != id));
+    let searched = h.engine.db.list(&crate::db::HistoryQuery { text: Some("".into()), ..Default::default() }).unwrap();
+    assert!(searched.iter().all(|i| i.id != id));
+    let hidden = h.engine.db.list(&crate::db::HistoryQuery { status: Some("silent".into()), ..Default::default() }).unwrap();
+    assert_eq!(hidden.len(), 1);
+    assert_eq!(h.engine.purge_silent_items(), 0);
+    assert!(h.engine.db.get(&id).unwrap().is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn silent_recordings_are_purged_after_24_hours_with_their_audio() {
+    let h = harness();
+    let rec = record(&h, ctx("notepad.exe", ""), &[(false, 2000)]);
+    let id = rec.id.clone();
+    h.engine.process(rec, &no_progress()).await.unwrap();
+    let mut audio = h.engine.db.get(&id).unwrap().unwrap().audio_path.unwrap();
+    for _ in 0..100 {
+        if audio.ends_with(".flac") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        audio = h.engine.db.get(&id).unwrap().unwrap().audio_path.unwrap();
+    }
+    // Age it past 24 hours.
+    let old = HistoryItem { id: "old".into(), created_at: 1, kind: "dictation".into(), status: "silent".into(), ..Default::default() };
+    h.engine.db.insert_dictation(&old).unwrap();
+    assert_eq!(h.engine.purge_silent_items(), 1);
+    assert!(h.engine.db.get("old").unwrap().is_none());
+    assert!(h.engine.db.get(&id).unwrap().is_some());
+    let conn_age = |ms: i64| h.engine.db.set_created_at_for_test(&id, ms);
+    conn_age(1);
+    assert_eq!(h.engine.purge_silent_items(), 1);
     assert!(h.engine.db.get(&id).unwrap().is_none());
-    assert!(h.engine.db.segments(&id).unwrap().is_empty());
-    assert!(!h.engine.recordings_dir().join(format!("{id}.pcm")).exists());
-    assert!(!h.engine.recordings_dir().join(format!("{id}.flac")).exists());
+    assert!(!std::path::Path::new(&audio).exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hidden_silent_recording_can_still_be_transcribed_within_24_hours() {
+    let h = harness();
+    let rec = record(&h, ctx("notepad.exe", ""), &[(false, 2000)]);
+    let id = rec.id.clone();
+    h.engine.process(rec, &no_progress()).await.unwrap();
+    for _ in 0..100 {
+        if h.engine.db.get(&id).unwrap().unwrap().audio_path.unwrap().ends_with(".flac") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    h.stt.script.lock().unwrap().push_back(Ok("very quiet words".into()));
+    let r = h.engine.retry_dictation_with(&id, None, true).await.unwrap();
+    let Outcome::Text(p) = r else { panic!("{r:?}") };
+    assert_eq!(p.final_text, "Very quiet words.");
+    assert_eq!(h.engine.db.get(&id).unwrap().unwrap().status, "done");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -385,14 +437,14 @@ async fn cancel_keeps_real_recordings_and_drops_taps() {
     }
     s.cancel();
     assert_eq!(h.engine.db.get(&id).unwrap().unwrap().status, "cancelled");
-    // A long cancelled recording with no speech in it is dropped too.
+    // A long cancelled recording with no speech in it is hidden like a silent one.
     let mut s = h.engine.start_session(RecordingKind::Dictation, ctx("notepad.exe", ""), 48_000, 2, tokio::runtime::Handle::current()).unwrap();
     let quiet_id = s.id.clone();
     for chunk in audio48(&[(false, 2000)]).chunks(960) {
         s.push(chunk);
     }
     s.cancel();
-    assert!(h.engine.db.get(&quiet_id).unwrap().is_none());
+    assert_eq!(h.engine.db.get(&quiet_id).unwrap().unwrap().status, "silent");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -497,7 +549,7 @@ async fn empty_transcript_with_speech_is_kept_and_can_be_transcribed_anyway() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn old_silent_rows_are_purged_but_ones_with_speech_stay() {
+async fn old_silent_rows_are_hidden_but_ones_with_speech_stay() {
     let h = harness();
     let mk = |id: &str, status: &str| {
         let item = HistoryItem { id: id.into(), created_at: 1, kind: "dictation".into(), status: status.into(), ..Default::default() };
@@ -510,6 +562,7 @@ async fn old_silent_rows_are_purged_but_ones_with_speech_stay() {
     h.engine.db.upsert_segment(&seg("silent", false)).unwrap();
     h.engine.db.upsert_segment(&seg("heard", true)).unwrap();
     assert_eq!(h.engine.purge_silent_items(), 1);
+    // created_at 1 is far older than 24 h: legacy silent rows are hidden, then purged.
     assert!(h.engine.db.get("silent").unwrap().is_none());
     assert!(h.engine.db.get("heard").unwrap().is_some());
     assert!(h.engine.db.get("failed").unwrap().is_some());
