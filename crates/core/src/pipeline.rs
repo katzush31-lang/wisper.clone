@@ -589,12 +589,21 @@ impl Engine {
             text::capitalise_first(s.trim())
         };
 
-        let (model_id, fast) = dictation_model(&settings, duration_ms);
+        let (mut model_id, mut fast) = dictation_model(&settings, duration_ms);
         let llm_used = settings.cleanup_level != CleanupLevel::None;
         let (body, clean, error) = if !llm_used {
             (deterministic(&fixed), None, None)
         } else {
-            match self.llm_cleanup(&fixed, &mode, settings.cleanup_level, ctx, before.clone(), use_ctx, &entries, &model_id).await {
+            let mut r = self.llm_cleanup(&fixed, &mode, settings.cleanup_level, ctx, before.clone(), use_ctx, &entries, &model_id).await;
+            // The fast model may be unavailable on this account (retired, renamed, no access):
+            // try the normal model once before giving up on AI cleanup.
+            if fast && matches!(&r, Err(e) if e.kind == ErrorKind::BadRequest) {
+                tracing::warn!("fast cleanup model {model_id} failed ({}); retrying with the normal model", r.as_ref().err().map(|e| e.message.as_str()).unwrap_or(""));
+                model_id = cleanup_model(&settings);
+                fast = false;
+                r = self.llm_cleanup(&fixed, &mode, settings.cleanup_level, ctx, before.clone(), use_ctx, &entries, &model_id).await;
+            }
+            match r {
                 Ok(t) => {
                     let (t2, more) = dictionary::apply_replacements(&t, &entries);
                     fixes += more;

@@ -34,6 +34,8 @@ impl Transcriber for FakeStt {
 #[derive(Default)]
 struct FakeLlm {
     fail: Mutex<Option<ProviderError>>,
+    /// Fails only requests for this model.
+    fail_model: Mutex<Option<(String, ProviderError)>>,
     requests: Mutex<Vec<TextRequest>>,
 }
 
@@ -49,6 +51,11 @@ impl TextModel for FakeLlm {
         self.requests.lock().unwrap().push(req.clone());
         if let Some(e) = self.fail.lock().unwrap().clone() {
             return Err(e);
+        }
+        if let Some((m, e)) = self.fail_model.lock().unwrap().clone() {
+            if m == req.model {
+                return Err(e);
+            }
         }
         let body = if req.user.contains("<instruction>") {
             format!("DONE: {}", between(&req.user, "<instruction>\n", "\n</instruction>"))
@@ -581,4 +588,31 @@ async fn tiny_dictation_skips_the_ai_only_when_switched_on() {
     let rec = record(&h, ctx("notepad.exe", ""), &[(false, 300), (true, 1500), (false, 400)]);
     h.engine.process(rec, &no_progress()).await.unwrap();
     assert_eq!(h.llm.requests.lock().unwrap().len(), 1, "a filler word still goes to the AI");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unavailable_fast_model_falls_back_to_normal_model() {
+    let h = harness();
+    *h.llm.fail_model.lock().unwrap() = Some(("claude-haiku-5-5".into(), ProviderError::new(ErrorKind::BadRequest, "Claude", "model: not found")));
+    h.stt.script.lock().unwrap().push_back(Ok("um we need milk".into()));
+    let rec = record(&h, ctx("notepad.exe", ""), &[(false, 300), (true, 3000), (false, 400)]);
+    let id = rec.id.clone();
+    let Outcome::Text(p) = h.engine.process(rec, &no_progress()).await.unwrap() else { panic!() };
+    assert!(p.cleanup_warning.is_none());
+    let models: Vec<_> = h.llm.requests.lock().unwrap().iter().map(|r| r.model.clone()).collect();
+    assert_eq!(models, ["claude-haiku-5-5", "claude-sonnet-5-5"]);
+    let t = h.engine.db.get(&id).unwrap().unwrap().timings.unwrap();
+    assert_eq!(t["cleanupModel"], "claude-sonnet-5-5");
+    assert_eq!(t["cleanupFast"], false);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fast_model_auth_or_offline_errors_do_not_retry_on_normal_model() {
+    let h = harness();
+    *h.llm.fail_model.lock().unwrap() = Some(("claude-haiku-5-5".into(), ProviderError::new(ErrorKind::Auth, "Claude", "401")));
+    h.stt.script.lock().unwrap().push_back(Ok("um we need milk".into()));
+    let rec = record(&h, ctx("notepad.exe", ""), &[(false, 300), (true, 3000), (false, 400)]);
+    let Outcome::Text(p) = h.engine.process(rec, &no_progress()).await.unwrap() else { panic!() };
+    assert!(p.cleanup_warning.is_some());
+    assert_eq!(h.llm.requests.lock().unwrap().len(), 1);
 }
