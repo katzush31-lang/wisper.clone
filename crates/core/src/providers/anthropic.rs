@@ -249,6 +249,18 @@ mod tests {
     }
 
     #[test]
+    fn fast_model_gets_no_thinking_low_effort_and_cached_prompt() {
+        let b = messages_body(&req(crate::settings::FastCleanup::default().anthropic_model.as_str()));
+        assert_eq!(b["model"], "claude-haiku-5-5");
+        assert_eq!(b["thinking"]["type"], "disabled");
+        assert_eq!(b["output_config"]["effort"], "low");
+        // The cache breakpoint is model-independent, so the fast model caches the prompt too.
+        assert_eq!(b["system"][0]["cache_control"]["type"], "ephemeral");
+        // Dated/suffixed Haiku ids are covered as well.
+        assert_eq!(speed_settings("claude-haiku-5-5-20260101").0.unwrap()["type"], "disabled");
+    }
+
+    #[test]
     fn plain_fallback_drops_only_speed_settings() {
         let full = messages_body(&req("claude-sonnet-5-5"));
         let plain = plain_body(&full);

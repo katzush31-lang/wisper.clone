@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildHeatmap, formatMinutes, heatBand, weeklyTotals } from "./insights/utils";
+import { buildHeatmap, formatMinutes, formatSeconds, heatBand, speedSummary, weeklyTotals } from "./insights/utils";
 
 describe("heatBand", () => {
   it("maps word counts to 5 bands", () => {
@@ -45,5 +45,26 @@ describe("formatMinutes", () => {
     expect(formatMinutes(200)).toBe("3 h 20 min");
     expect(formatMinutes(45)).toBe("45 min");
     expect(formatMinutes(120)).toBe("2 h");
+  });
+});
+
+describe("formatSeconds", () => {
+  it("shows one decimal and never 0.0", () => {
+    expect(formatSeconds(1400)).toBe("1.4 s");
+    expect(formatSeconds(1449)).toBe("1.4 s");
+    expect(formatSeconds(12)).toBe("0.1 s");
+    expect(formatSeconds(12000)).toBe("12.0 s");
+  });
+});
+
+describe("speedSummary", () => {
+  const base = { samples: 10, transcribeWaitMedianMs: 600, cleanupMedianMs: 800, totalWaitMedianMs: 1400, fastModelShare: 0.4 };
+  it("is hidden with fewer than 3 samples", () => {
+    expect(speedSummary(undefined)).toBeNull();
+    expect(speedSummary({ ...base, samples: 2 })).toBeNull();
+  });
+  it("formats the parts and the fast model count", () => {
+    expect(speedSummary(base)).toEqual({ total: "1.4 s", transcribe: "0.6 s", cleanup: "0.8 s", fast: "4 of 10 used the fast model" });
+    expect(speedSummary({ ...base, fastModelShare: 0 })?.fast).toBe("None used the fast model");
   });
 });

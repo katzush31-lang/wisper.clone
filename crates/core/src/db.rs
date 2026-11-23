@@ -157,6 +157,66 @@ pub struct Stats {
     pub fixes: i64,
     /// "this-computer" or "all-computers" (numbers from every signed-in computer combined).
     pub scope: String,
+    /// How quickly text appeared after recent dictations on this computer.
+    pub speed: Speed,
+}
+
+/// Waiting time after you stop talking, over the last (up to) 50 completed dictations on this
+/// computer. All times are medians in milliseconds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Speed {
+    pub samples: u32,
+    /// Waiting for the transcription to finish after you stopped.
+    pub transcribe_wait_median_ms: u64,
+    pub cleanup_median_ms: u64,
+    /// Key release to text ready to paste.
+    pub total_wait_median_ms: u64,
+    /// Share (0 to 1) of those dictations cleaned up by the fast model.
+    pub fast_model_share: f64,
+}
+
+const SPEED_WINDOW: i64 = 50;
+
+fn median(v: &mut [u64]) -> u64 {
+    if v.is_empty() {
+        return 0;
+    }
+    v.sort_unstable();
+    let n = v.len();
+    if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        (v[n / 2 - 1] + v[n / 2]) / 2
+    }
+}
+
+/// Builds the speed summary from stored `timings` JSON strings. Entries without a measured
+/// wait after stopping (e.g. re-processed or retried from saved text) are ignored.
+pub fn compute_speed(timings: &[String]) -> Speed {
+    let (mut tr, mut cl, mut tot) = (Vec::new(), Vec::new(), Vec::new());
+    let mut fast = 0u32;
+    for t in timings {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(t) else { continue };
+        let (Some(a), Some(b), Some(c)) = (v["transcribeWaitMs"].as_u64(), v["cleanupMs"].as_u64(), v["totalAfterStopMs"].as_u64()) else { continue };
+        if a == 0 {
+            continue;
+        }
+        tr.push(a);
+        cl.push(b);
+        tot.push(c);
+        if v["cleanupFast"].as_bool().unwrap_or(false) {
+            fast += 1;
+        }
+    }
+    let n = tot.len() as u32;
+    Speed {
+        samples: n,
+        transcribe_wait_median_ms: median(&mut tr),
+        cleanup_median_ms: median(&mut cl),
+        total_wait_median_ms: median(&mut tot),
+        fast_model_share: if n == 0 { 0.0 } else { fast as f64 / n as f64 },
+    }
 }
 
 /// One synced dictionary word or snippet, in the account's API shape.
@@ -1062,8 +1122,14 @@ impl Db {
                 }
             }
         }
+        let mut stmt = conn.prepare(
+            "SELECT timings FROM dictations WHERE status='done' AND kind='dictation' AND timings IS NOT NULL ORDER BY created_at DESC LIMIT ?1",
+        )?;
+        let timings: Vec<String> = stmt.query_map([SPEED_WINDOW], |r| r.get(0))?.collect::<DbResult<_>>()?;
+        drop(stmt);
         drop(conn);
         let mut s = compute_stats(&rows, typing_wpm, now);
+        s.speed = compute_speed(&timings);
         s.scope = if include_remote { "all-computers" } else { "this-computer" }.to_string();
         Ok(s)
     }
@@ -1656,5 +1722,43 @@ mod tests {
         let rid = db.dict_all().unwrap().into_iter().find(|e| e.word == "Chaya").unwrap().id;
         db.dict_delete(rid).unwrap();
         assert!(db.items_dirty().unwrap().iter().any(|i| i.uid == "r" && i.deleted));
+    }
+
+    #[test]
+    fn speed_uses_medians_and_ignores_unmeasured_rows() {
+        let t = |tr: u64, cl: u64, tot: u64, fast: bool| {
+            serde_json::json!({"transcribeWaitMs": tr, "cleanupMs": cl, "totalAfterStopMs": tot, "cleanupFast": fast}).to_string()
+        };
+        let rows = vec![
+            t(600, 800, 1400, true),
+            t(900, 1500, 2400, false),
+            t(700, 900, 1600, true),
+            t(0, 1200, 1200, false), // re-processed from saved text: not a real wait
+            "not json".into(),
+            r#"{"recordingMs":1000}"#.into(), // old row without the new fields
+        ];
+        let s = compute_speed(&rows);
+        assert_eq!(s.samples, 3);
+        assert_eq!(s.transcribe_wait_median_ms, 700);
+        assert_eq!(s.cleanup_median_ms, 900);
+        assert_eq!(s.total_wait_median_ms, 1600);
+        assert!((s.fast_model_share - 2.0 / 3.0).abs() < 1e-9);
+        let even = compute_speed(&[t(100, 100, 200, false), t(300, 300, 400, false)]);
+        assert_eq!(even.total_wait_median_ms, 300);
+        assert_eq!(compute_speed(&[]), Speed::default());
+    }
+
+    #[test]
+    fn speed_covers_only_the_last_50_dictations_in_stats() {
+        let db = Db::open_in_memory().unwrap();
+        for i in 0..60i64 {
+            let mut it = item(&format!("d{i}"), 1_000 + i, "hello there");
+            let total = if i < 10 { 9000 } else { 1000 };
+            it.timings = Some(serde_json::json!({"transcribeWaitMs": 500, "cleanupMs": 400, "totalAfterStopMs": total, "cleanupFast": false}));
+            db.insert_dictation(&it).unwrap();
+        }
+        let s = db.stats(40, Local::now()).unwrap();
+        assert_eq!(s.speed.samples, 50);
+        assert_eq!(s.speed.total_wait_median_ms, 1000);
     }
 }

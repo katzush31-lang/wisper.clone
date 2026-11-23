@@ -4,7 +4,7 @@ import { api, events, type CleanupProvider, type ModelInfo, type Provider, type 
 import { keyStorageNote } from "../../shared/account";
 import { openUrl } from "../../shared/tauri";
 import { useAccountStatus } from "../useAccount";
-import { Segmented, SettingGroup, SettingRow, errorText, useToast } from "../components";
+import { Segmented, SettingGroup, SettingRow, Switch, errorText, useToast } from "../components";
 import { useSaver, type SectionProps } from "./GeneralSection";
 
 function ModelSelect({
@@ -34,6 +34,14 @@ function ModelSelect({
     </>
   );
 }
+
+const SHORT_LIMITS: { seconds: number; label: string }[] = [
+  { seconds: 15, label: "15 seconds" },
+  { seconds: 30, label: "30 seconds" },
+  { seconds: 60, label: "1 minute" },
+  { seconds: 120, label: "2 minutes" },
+  { seconds: 300, label: "5 minutes" },
+];
 
 function KeyBlock({
   provider,
@@ -151,6 +159,10 @@ export default function ProvidersSection({ settings, update }: SectionProps) {
 
   const setProviders = (patch: Partial<Settings["providers"]>) => save({ ...settings, providers: { ...settings.providers, ...patch } });
 
+  const fast = settings.providers.fastCleanup;
+  const setFast = (patch: Partial<Settings["providers"]["fastCleanup"]>) => setProviders({ fastCleanup: { ...fast, ...patch } });
+  const useOpenAi = settings.providers.cleanupProvider === "openAi";
+
   return (
     <>
       <SettingGroup title="OpenAI API key (used for speech-to-text)">
@@ -202,6 +214,45 @@ export default function ProvidersSection({ settings, update }: SectionProps) {
           <SettingRow title="OpenAI cleanup model" description="The OpenAI model used for cleanup when OpenAI is chosen above." stacked>
             <ModelSelect label="OpenAI cleanup model" models={openai} value={settings.providers.openaiCleanupModel} onChange={(id) => setProviders({ openaiCleanupModel: id })} />
           </SettingRow>
+        )}
+      </SettingGroup>
+
+      <SettingGroup title="Speed">
+        <SettingRow
+          title="Use a faster model for short dictations"
+          description="Short dictations are cleaned up by a quicker model, so text appears sooner. Long ones still use your main model."
+        >
+          <Switch label="Use a faster model for short dictations" checked={fast.enabled} onChange={(enabled) => setFast({ enabled })} />
+        </SettingRow>
+        {fast.enabled && (
+          <>
+            <SettingRow title="Short means under" description="Dictations shorter than this use the faster model." stacked>
+              <select
+                className="select settings-select"
+                aria-label="Short means under"
+                value={fast.maxSeconds}
+                onChange={(e) => setFast({ maxSeconds: Number(e.target.value) })}
+              >
+                {!SHORT_LIMITS.some((o) => o.seconds === fast.maxSeconds) && <option value={fast.maxSeconds}>{fast.maxSeconds} seconds</option>}
+                {SHORT_LIMITS.map((o) => (
+                  <option key={o.seconds} value={o.seconds}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </SettingRow>
+            <SettingRow
+              title="Faster model"
+              description={`The ${useOpenAi ? "OpenAI" : "Claude"} model used for short dictations. Pick the quickest one for the fastest results.`}
+              stacked
+            >
+              {useOpenAi ? (
+                <ModelSelect label="Faster model" models={openai} value={fast.openaiModel} onChange={(id) => setFast({ openaiModel: id })} />
+              ) : (
+                <ModelSelect label="Faster model" models={claude} value={fast.anthropicModel} onChange={(id) => setFast({ anthropicModel: id })} />
+              )}
+            </SettingRow>
+          </>
         )}
       </SettingGroup>
 

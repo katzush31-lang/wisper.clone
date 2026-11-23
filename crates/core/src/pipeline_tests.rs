@@ -472,3 +472,84 @@ async fn silent_judged_recording_can_be_transcribed_anyway() {
     let Outcome::Text(p) = r else { panic!("{r:?}") };
     assert_eq!(p.final_text, "Very quiet words.");
 }
+
+// ---------------------------------------------------------------- fast model for short dictations
+
+fn with_provider(provider: CleanupProvider) -> Settings {
+    let mut s = Settings::default();
+    s.providers.cleanup_provider = provider;
+    s
+}
+
+#[test]
+fn fast_model_routing_by_duration() {
+    let s = Settings::default();
+    assert_eq!(s.providers.fast_cleanup.max_seconds, 30);
+    assert_eq!(dictation_model(&s, Some(29_999)), ("claude-haiku-5-5".to_string(), true));
+    assert_eq!(dictation_model(&s, Some(30_000)), ("claude-sonnet-5-5".to_string(), false));
+    assert_eq!(dictation_model(&s, Some(95_000)), ("claude-sonnet-5-5".to_string(), false));
+    // Unknown length -> normal model.
+    assert_eq!(dictation_model(&s, None), ("claude-sonnet-5-5".to_string(), false));
+    assert_eq!(dictation_model(&s, Some(0)), ("claude-sonnet-5-5".to_string(), false));
+}
+
+#[test]
+fn fast_model_can_be_disabled_or_retuned() {
+    let mut s = Settings::default();
+    s.providers.fast_cleanup.enabled = false;
+    assert_eq!(dictation_model(&s, Some(5_000)), ("claude-sonnet-5-5".to_string(), false));
+    s.providers.fast_cleanup.enabled = true;
+    s.providers.fast_cleanup.max_seconds = 120;
+    assert!(dictation_model(&s, Some(100_000)).1);
+    s.providers.fast_cleanup.anthropic_model = "  ".into();
+    assert_eq!(dictation_model(&s, Some(5_000)), ("claude-sonnet-5-5".to_string(), false));
+}
+
+#[test]
+fn fast_model_follows_the_selected_provider() {
+    let s = with_provider(CleanupProvider::OpenAi);
+    assert_eq!(dictation_model(&s, Some(10_000)), ("gpt-6-luna".to_string(), true));
+    assert_eq!(dictation_model(&s, Some(40_000)), ("gpt-6.2-sol".to_string(), false));
+}
+
+#[test]
+fn old_settings_files_get_fast_cleanup_defaults() {
+    let p: crate::settings::ProviderSettings = serde_json::from_str(r#"{"anthropicModel":"claude-opus-5-5"}"#).unwrap();
+    assert!(p.fast_cleanup.enabled);
+    assert_eq!(p.fast_cleanup.max_seconds, 30);
+    assert_eq!(p.fast_cleanup.openai_model, "gpt-6-luna");
+    let p: crate::settings::ProviderSettings = serde_json::from_str(r#"{"fastCleanup":{"maxSeconds":60}}"#).unwrap();
+    assert_eq!(p.fast_cleanup.max_seconds, 60);
+    assert_eq!(p.fast_cleanup.anthropic_model, "claude-haiku-5-5");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn short_dictation_uses_fast_model_and_records_it() {
+    let h = harness();
+    h.stt.script.lock().unwrap().push_back(Ok("um we need milk".into()));
+    let rec = record(&h, ctx("notepad.exe", ""), &[(false, 300), (true, 3000), (false, 400)]);
+    let id = rec.id.clone();
+    h.engine.process(rec, &no_progress()).await.unwrap();
+    assert_eq!(h.llm.requests.lock().unwrap()[0].model, "claude-haiku-5-5");
+    let item = h.engine.db.get(&id).unwrap().unwrap();
+    assert_eq!(item.timings.as_ref().unwrap()["cleanupModel"], "claude-haiku-5-5");
+    assert_eq!(item.timings.as_ref().unwrap()["cleanupFast"], true);
+    assert_eq!(item.meta.as_ref().unwrap()["cleanupModel"], "claude-haiku-5-5");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn redo_as_and_commands_use_the_normal_model() {
+    let h = harness();
+    h.stt.script.lock().unwrap().push_back(Ok("um we need milk".into()));
+    let rec = record(&h, ctx("notepad.exe", ""), &[(false, 300), (true, 3000), (false, 400)]);
+    let id = rec.id.clone();
+    h.engine.process(rec, &no_progress()).await.unwrap();
+    h.engine.reprocess(&id, "list").await.unwrap();
+    assert_eq!(h.llm.requests.lock().unwrap().last().unwrap().model, "claude-sonnet-5-5");
+    let item = h.engine.db.get(&id).unwrap().unwrap();
+    assert_eq!(item.timings.as_ref().unwrap()["cleanupFast"], false);
+    // Voice command / transform on a selection.
+    let c = ctx("notepad.exe", "");
+    h.engine.run_instruction("make it shorter", Some("some selected text"), &c).await.unwrap();
+    assert_eq!(h.llm.requests.lock().unwrap().last().unwrap().model, "claude-sonnet-5-5");
+}

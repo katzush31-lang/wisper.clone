@@ -266,6 +266,16 @@ impl Controller {
             }
         }
         let settings = self.settings();
+        // Open the connections to the AI services while the user is talking, so the calls after
+        // recording skip the handshake. Fire-and-forget; can't delay or fail the recording.
+        {
+            let keys = self.engine.keys();
+            let (openai, anthropic) = (keys.openai.is_some(), keys.anthropic.is_some());
+            let provider = settings.providers.cleanup_provider;
+            tauri::async_runtime::spawn(async move {
+                wisper_core::providers::prewarm_for(openai, anthropic, provider).await;
+            });
+        }
         let hwnd = platform::foreground_window();
         let (exe, title) = platform::foreground_app();
         let app_info = if target == Target::Scratchpad { apps::identify("wisper.exe", "Scratchpad") } else { apps::identify(&exe, &title) };

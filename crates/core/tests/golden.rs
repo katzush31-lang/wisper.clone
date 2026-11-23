@@ -2,6 +2,7 @@
 //! so they're ignored by default. Run with:
 //!   ANTHROPIC_API_KEY=... cargo test -p wisper-core --test golden -- --ignored --nocapture
 //! CI runs them automatically when the ANTHROPIC_API_KEY secret is set.
+//! To compare models (pass count and latency per model), set GOLDEN_MODELS=model1,model2.
 
 use std::sync::Arc;
 
@@ -102,6 +103,31 @@ const CASES: &[Case] = &[
     },
 ];
 
+/// Models to run the cases against: `GOLDEN_MODELS` (comma-separated, e.g.
+/// `claude-sonnet-5-5,claude-haiku-5-5`), else `WISPER_CLEANUP_MODEL`, else the default model.
+fn models_to_test() -> Vec<String> {
+    let listed: Vec<String> = std::env::var("GOLDEN_MODELS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
+        .collect();
+    if !listed.is_empty() {
+        return listed;
+    }
+    vec![std::env::var("WISPER_CLEANUP_MODEL").unwrap_or_else(|_| Settings::default().providers.anthropic_model)]
+}
+
+fn median_ms(v: &[u128]) -> u128 {
+    let mut v = v.to_vec();
+    v.sort_unstable();
+    match v.len() {
+        0 => 0,
+        n if n % 2 == 1 => v[n / 2],
+        n => (v[n / 2 - 1] + v[n / 2]) / 2,
+    }
+}
+
 #[tokio::test]
 #[ignore]
 async fn cleanup_quality() {
@@ -109,27 +135,47 @@ async fn cleanup_quality() {
         eprintln!("ANTHROPIC_API_KEY not set; skipping");
         return;
     };
-    let dir = tempfile::tempdir().unwrap();
-    let db = Arc::new(Db::open_in_memory().unwrap());
-    let mut settings = Settings::default();
-    if let Ok(m) = std::env::var("WISPER_CLEANUP_MODEL") {
-        settings.providers.anthropic_model = m;
-    }
-    let keys = ApiKeys { openai: std::env::var("OPENAI_API_KEY").ok(), anthropic: Some(key) };
-    let engine = Engine::new(db, dir.path().to_path_buf(), settings.clone(), keys, Arc::new(RealProviders));
-    let mut failures = Vec::new();
-    for c in CASES {
-        let ctx = CaptureContext { app: apps::identify(c.exe, c.title), ..Default::default() };
-        let r = engine.clean_text(c.transcript, &ctx, c.mode).await;
-        let ok = r.error.is_none() && (c.check)(&r.text);
-        println!("{} {} [{}]\n    in:  {}\n    out: {}\n", if ok { "PASS" } else { "FAIL" }, c.name, r.mode_id, c.transcript, r.text.replace('\n', "\\n"));
-        if let Some(e) = &r.error {
-            println!("    error: {e}");
+    let models = models_to_test();
+    let mut all_failures = Vec::new();
+    let mut summary = Vec::new();
+    for model in &models {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let mut settings = Settings::default();
+        settings.providers.anthropic_model = model.clone();
+        let keys = ApiKeys { openai: std::env::var("OPENAI_API_KEY").ok(), anthropic: Some(key.clone()) };
+        let engine = Engine::new(db, dir.path().to_path_buf(), settings, keys, Arc::new(RealProviders));
+        println!("===== {model} =====");
+        let mut failures = Vec::new();
+        let mut times = Vec::new();
+        for c in CASES {
+            let ctx = CaptureContext { app: apps::identify(c.exe, c.title), ..Default::default() };
+            let started = std::time::Instant::now();
+            let r = engine.clean_text(c.transcript, &ctx, c.mode).await;
+            let ms = started.elapsed().as_millis();
+            times.push(ms);
+            let ok = r.error.is_none() && (c.check)(&r.text);
+            println!("{} {} [{}] {} ms\n    in:  {}\n    out: {}\n", if ok { "PASS" } else { "FAIL" }, c.name, r.mode_id, ms, c.transcript, r.text.replace('\n', "\\n"));
+            if let Some(e) = &r.error {
+                println!("    error: {e}");
+            }
+            if !ok {
+                failures.push(format!("{model}: {}", c.name));
+            }
         }
-        if !ok {
-            failures.push(c.name);
-        }
+        let mean = times.iter().sum::<u128>() / times.len().max(1) as u128;
+        summary.push(format!(
+            "{model}: {}/{} passed, latency per case median {} ms, mean {} ms",
+            CASES.len() - failures.len(),
+            CASES.len(),
+            median_ms(&times),
+            mean
+        ));
+        all_failures.extend(failures);
     }
-    println!("model: {} — {}/{} passed", settings.providers.anthropic_model, CASES.len() - failures.len(), CASES.len());
-    assert!(failures.is_empty(), "failed: {failures:?}");
+    println!("===== summary =====");
+    for line in &summary {
+        println!("{line}");
+    }
+    assert!(all_failures.is_empty(), "failed: {all_failures:?}");
 }

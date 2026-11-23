@@ -50,6 +50,14 @@ export interface Transform {
   builtin: boolean;
 }
 
+export interface FastCleanup {
+  enabled: boolean;
+  /** "short" means a recording shorter than this many seconds */
+  maxSeconds: number;
+  anthropicModel: string;
+  openaiModel: string;
+}
+
 export interface Settings {
   version: number;
   userName: string;
@@ -91,6 +99,8 @@ export interface Settings {
     cleanupProvider: CleanupProvider;
     anthropicModel: string;
     openaiCleanupModel: string;
+    /** a quicker model for short dictations */
+    fastCleanup: FastCleanup;
   };
   typingWpm: number;
   smartFormatting: boolean;
@@ -162,6 +172,9 @@ export interface HistoryItem {
     transcribeWaitMs?: number;
     cleanupMs?: number;
     totalAfterStopMs?: number;
+    /** the AI model that cleaned the text up, and whether it was the fast one */
+    cleanupModel?: string | null;
+    cleanupFast?: boolean;
   } | null;
   meta: Record<string, unknown> | null;
 }
@@ -237,6 +250,17 @@ export interface Stats {
   fixes: number;
   /** "all-computers" when signed in and combined with your other computers */
   scope?: "this-computer" | "all-computers";
+  /** waiting time after you stop talking, over the last 50 dictations on this computer */
+  speed?: Speed;
+}
+
+export interface Speed {
+  samples: number;
+  transcribeWaitMedianMs: number;
+  cleanupMedianMs: number;
+  totalWaitMedianMs: number;
+  /** 0 to 1 */
+  fastModelShare: number;
 }
 
 export interface ModelInfo {

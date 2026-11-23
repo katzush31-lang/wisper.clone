@@ -46,6 +46,19 @@ jobs:
             echo "No ANTHROPIC_API_KEY secret yet; skipping real-API quality tests."
           fi
 
+      - name: Cleanup speed and quality by model
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOLDEN_MODELS: claude-sonnet-5-5,claude-haiku-5-5
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            cargo test -p wisper-core --locked --test golden -- --ignored --nocapture
+          else
+            echo "No ANTHROPIC_API_KEY secret yet; skipping model comparison."
+          fi
+
   cloud-test:
     name: Cloud Worker tests
     runs-on: ubuntu-latest

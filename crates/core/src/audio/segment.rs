@@ -111,6 +111,20 @@ impl Segmenter {
         self.total_samples
     }
 
+    /// The earliest sample at which the open segment could still be cut. Audio before this
+    /// point is certain to belong to the open segment, so it can be streamed out (live
+    /// transcription) without ever crossing a boundary the segmenter decides later.
+    ///
+    /// A pause cut lands inside the current silent run (never before it starts); a forced cut
+    /// lands within the search window before the length limit.
+    pub fn safe_point(&self) -> usize {
+        let pause_safe = self.total_samples - self.silence_run * FRAME_SAMPLES;
+        let max_len = ms_to_samples(self.cfg.max_len_ms);
+        let search = ms_to_samples(self.cfg.forced_search_ms);
+        let forced_safe = self.seg_start + max_len.saturating_sub(search);
+        pause_safe.min(forced_safe).clamp(self.seg_start, self.total_samples)
+    }
+
     /// True once any speech at all has been detected in the recording.
     pub fn heard_speech(&self) -> bool {
         self.speech_frames_total * FRAME_SAMPLES >= ms_to_samples(self.cfg.min_speech_ms)
@@ -178,6 +192,38 @@ mod tests {
         }
         out.extend(s.finish());
         out
+    }
+
+    /// Every cut the segmenter makes lands at or after every safe point it reported earlier
+    /// for that segment (live transcription relies on this to never stream across a cut).
+    #[test]
+    fn cuts_never_land_before_a_reported_safe_point() {
+        let mut spec = vec![];
+        for i in 0..40u64 {
+            spec.push((true, 2_000 + (i * 1_370) % 9_000));
+            spec.push((false, 200 + (i * 530) % 1_600));
+        }
+        spec.push((true, 120_000)); // non-stop speech: forced cuts
+        spec.push((false, 60_000)); // long silence
+        let mut s = Segmenter::new(SegmentConfig::default());
+        let mut max_safe = 0;
+        let mut cuts = 0;
+        for f in frames(&spec) {
+            if let Some(p) = s.push_frame(f) {
+                assert!(p.end >= max_safe, "cut at {} before safe point {}", p.end, max_safe);
+                cuts += 1;
+            }
+            let safe = s.safe_point();
+            assert!(safe <= s.samples());
+            max_safe = max_safe.max(safe);
+        }
+        assert!(cuts > 10);
+        // While speaking, the safe point keeps up with the audio (nothing is held back).
+        let mut s = Segmenter::new(SegmentConfig::default());
+        for f in frames(&[(true, 3_000)]) {
+            s.push_frame(f);
+        }
+        assert_eq!(s.safe_point(), s.samples());
     }
 
     #[test]

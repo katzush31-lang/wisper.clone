@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, compactNumber, events, type Stats } from "../../shared/api";
 import { EmptyState } from "../components";
 import { useSettings } from "../useSettings";
-import { buildHeatmap, formatMinutes, heatBand, weeklyTotals } from "./insights/utils";
+import { buildHeatmap, formatMinutes, heatBand, speedSummary, weeklyTotals } from "./insights/utils";
 import "./insights.css";
 
 function Gauge({ wpm }: { wpm: number }) {
@@ -131,6 +131,7 @@ export default function InsightsPage() {
 
   const typingWpm = settings?.typingWpm ?? 40;
   const empty = !stats || stats.totalWords === 0;
+  const speed = speedSummary(stats?.speed);
   const topMax = Math.max(1, ...(stats?.topApps ?? []).map((a) => a.words));
 
   return (
@@ -174,6 +175,19 @@ export default function InsightsPage() {
             </Tile>
           </div>
           <p className="muted ins-foot">Time saved compares with typing at {typingWpm} words per minute.</p>
+
+          {speed && (
+            <section className="card ins-section">
+              <div className="section-label">Speed</div>
+              <div className="ins-speed-head">After you stop talking, your text appears in about <strong>{speed.total}</strong></div>
+              <ul className="ins-speed-parts muted">
+                <li>Transcription finishing: {speed.transcribe}</li>
+                <li>Cleanup: {speed.cleanup}</li>
+                <li>{speed.fast}</li>
+              </ul>
+              <p className="muted ins-note">Typical times over your last dictations on this computer.</p>
+            </section>
+          )}
 
           <section className="card ins-section">
             <div className="section-label">Words per week, last 12 weeks</div>

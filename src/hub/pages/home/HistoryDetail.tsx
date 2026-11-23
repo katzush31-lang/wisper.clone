@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { api, formatDuration, type HistoryItem, type Mode } from "../../../shared/api";
 import { isTauri } from "../../../shared/tauri";
 import { ConfirmDialog, Modal, errorText, useToast } from "../../components";
-import { itemText, ms, statusInfo } from "./helpers";
+import { itemText, modelName, ms, statusInfo } from "./helpers";
 
 export default function HistoryDetail({
   item,
@@ -78,7 +78,7 @@ export default function HistoryDetail({
   const timing = [
     ms(t?.recordingMs) && `Recording ${ms(t?.recordingMs)}`,
     ms(t?.transcribeWaitMs) && `Waiting after you stopped ${ms(t?.transcribeWaitMs)}`,
-    ms(t?.cleanupMs) && `Cleanup ${ms(t?.cleanupMs)}`,
+    ms(t?.cleanupMs) && `Cleanup ${ms(t?.cleanupMs)}${t?.cleanupModel ? ` · ${modelName(t.cleanupModel)}` : ""}`,
   ].filter(Boolean);
   const facts = [
     item.appName && `in ${item.appName}`,

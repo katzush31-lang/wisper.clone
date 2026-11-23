@@ -403,9 +403,10 @@ impl Engine {
     ) -> Result<Outcome, PipelineError> {
         let clean_start = Instant::now();
         let processed = match kind {
-            RecordingKind::Dictation => self.clean_text(raw, ctx, forced_mode).await,
+            // "Redo as" (a forced mode) and recordings of unknown length use the normal model.
+            RecordingKind::Dictation => self.clean_text_for(raw, ctx, forced_mode, Some(duration_ms).filter(|_| forced_mode.is_none())).await,
             RecordingKind::Command => match self.run_instruction(raw, ctx.selection.as_deref(), ctx).await {
-                Ok(t) => CleanResult { text: t.clone(), clean: Some(t), mode_id: "command".into(), mode_name: "Command".into(), fixes: 0, error: None },
+                Ok(t) => CleanResult { text: t.clone(), clean: Some(t), mode_id: "command".into(), mode_name: "Command".into(), fixes: 0, error: None, model: Some(cleanup_model(&self.settings())), fast: false },
                 Err(e) => return Err(self.fail(id, e)),
             },
         };
@@ -414,13 +415,17 @@ impl Engine {
             "transcribeWaitMs": transcribe_wait_ms,
             "cleanupMs": clean_start.elapsed().as_millis() as u64,
             "totalAfterStopMs": stop_at.elapsed().as_millis() as u64,
+            // Which model cleaned this up, so History and the Speed card can show it.
+            "cleanupModel": processed.model,
+            "cleanupFast": processed.fast,
         });
         let settings = self.settings();
         let meta = json!({
             "context": ctx,
             "transcriptionModel": settings.providers.transcription_model,
             "cleanupProvider": settings.providers.cleanup_provider,
-            "cleanupModel": cleanup_model(&settings),
+            "cleanupModel": processed.model.clone().unwrap_or_else(|| cleanup_model(&settings)),
+            "cleanupFast": processed.fast,
             "cleanupWarning": processed.error.as_ref().map(|e| e.user_message()),
         });
         let _ = self.db.set_result(id, raw, processed.clean.as_deref(), &processed.text, &processed.mode_id, processed.fixes, &timings, &meta);
@@ -495,6 +500,12 @@ impl Engine {
     /// Cleanup. Never fails: if the AI step can't run, returns the transcript with the
     /// deterministic fixes applied and the reason in `error`.
     pub async fn clean_text(&self, raw: &str, ctx: &CaptureContext, forced_mode: Option<&str>) -> CleanResult {
+        self.clean_text_for(raw, ctx, forced_mode, None).await
+    }
+
+    /// Like `clean_text`; `duration_ms` is the recording length, which lets short dictations
+    /// use the fast model (see `dictation_model`). None = always the normal model.
+    pub async fn clean_text_for(&self, raw: &str, ctx: &CaptureContext, forced_mode: Option<&str>, duration_ms: Option<u64>) -> CleanResult {
         let settings = self.settings();
         let (mode, text) = self.choose_mode(raw, &ctx.app, forced_mode);
         let entries = self.db.dict_all().unwrap_or_default();
@@ -515,10 +526,12 @@ impl Engine {
             text::capitalise_first(s.trim())
         };
 
-        let (body, clean, error) = if settings.cleanup_level == CleanupLevel::None {
+        let (model_id, fast) = dictation_model(&settings, duration_ms);
+        let llm_used = settings.cleanup_level != CleanupLevel::None;
+        let (body, clean, error) = if !llm_used {
             (deterministic(&fixed), None, None)
         } else {
-            match self.llm_cleanup(&fixed, &mode, settings.cleanup_level, ctx, before.clone(), use_ctx, &entries).await {
+            match self.llm_cleanup(&fixed, &mode, settings.cleanup_level, ctx, before.clone(), use_ctx, &entries, &model_id).await {
                 Ok(t) => {
                     let (t2, more) = dictionary::apply_replacements(&t, &entries);
                     fixes += more;
@@ -532,7 +545,7 @@ impl Engine {
         };
         let (restored, _) = snippets::restore_placeholders(&body, &ph_map);
         let final_text = text::fit_to_context(&restored, before.as_deref(), after.as_deref());
-        CleanResult { text: final_text, clean, mode_id: mode.id.clone(), mode_name: mode.name.clone(), fixes: fixes as i64, error }
+        CleanResult { text: final_text, clean, mode_id: mode.id.clone(), mode_name: mode.name.clone(), fixes: fixes as i64, error, model: llm_used.then_some(model_id), fast: llm_used && fast }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -545,6 +558,7 @@ impl Engine {
         before: Option<String>,
         use_ctx: bool,
         entries: &[dictionary::DictEntry],
+        model_id: &str,
     ) -> Result<String, ProviderError> {
         let settings = self.settings();
         let model = self.factory.text_model(&self.keys(), settings.providers.cleanup_provider);
@@ -566,7 +580,6 @@ impl Engine {
             vec![text_in.to_string()]
         };
         let n = chunks.len();
-        let model_id = cleanup_model(&settings);
         let mut futures = Vec::with_capacity(n);
         for (i, chunk) in chunks.iter().enumerate() {
             let mut c = base_ctx.clone();
@@ -578,7 +591,7 @@ impl Engine {
                 }
             }
             let req = TextRequest {
-                model: model_id.clone(),
+                model: model_id.to_string(),
                 system: system.clone(),
                 user: prompts::cleanup_user_message(chunk, &c),
                 max_tokens: max_tokens_for(chunk),
@@ -898,6 +911,10 @@ pub struct CleanResult {
     pub mode_name: String,
     pub fixes: i64,
     pub error: Option<ProviderError>,
+    /// The cleanup model that was asked, when the AI step ran.
+    pub model: Option<String>,
+    /// Whether that was the fast model for short dictations.
+    pub fast: bool,
 }
 
 /// Guards against the model answering or rewriting instead of cleaning: the cleaned text
@@ -918,6 +935,26 @@ fn cleanup_model(s: &Settings) -> String {
         CleanupProvider::Anthropic => s.providers.anthropic_model.clone(),
         CleanupProvider::OpenAi => s.providers.openai_cleanup_model.clone(),
     }
+}
+
+/// Picks the model for dictation cleanup: the fast model of the chosen provider when fast
+/// cleanup is on and the recording is shorter than the limit, otherwise the normal model.
+/// `duration_ms` is None when the length is unknown (always the normal model). Voice commands,
+/// transforms and "redo as" don't go through here; they always use `cleanup_model`.
+/// Returns the model id and whether it is the fast one.
+pub(crate) fn dictation_model(s: &Settings, duration_ms: Option<u64>) -> (String, bool) {
+    let f = &s.providers.fast_cleanup;
+    let short = duration_ms.map(|d| d > 0 && d < f.max_seconds as u64 * 1000).unwrap_or(false);
+    if f.enabled && short {
+        let fast = match s.providers.cleanup_provider {
+            CleanupProvider::Anthropic => &f.anthropic_model,
+            CleanupProvider::OpenAi => &f.openai_model,
+        };
+        if !fast.trim().is_empty() {
+            return (fast.clone(), true);
+        }
+    }
+    (cleanup_model(s), false)
 }
 
 fn max_tokens_for(text: &str) -> u32 {

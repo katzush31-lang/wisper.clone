@@ -42,3 +42,18 @@ export function ms(n: number | undefined): string | null {
   if (n == null) return null;
   return n >= 1000 ? `${(n / 1000).toFixed(1)} s` : `${Math.round(n)} ms`;
 }
+
+const MODEL_NAMES: Record<string, string> = {
+  "claude-sonnet-5-5": "Claude Sonnet 5.5",
+  "claude-haiku-5-5": "Claude Haiku 5.5",
+  "claude-opus-5-5": "Claude Opus 5.5",
+  "gpt-6.2-sol": "GPT-6.2 Sol",
+  "gpt-6-luna": "GPT-6 Luna",
+  "gpt-6.1-terra": "GPT-6.1 Terra",
+  "gpt-6.2-astra": "GPT-6.2 Astra",
+};
+
+/** Friendly name for a model id (the id itself if it is not a known one). */
+export function modelName(id: string): string {
+  return MODEL_NAMES[id] ?? id;
+}

@@ -106,3 +106,33 @@ export function formatMinutes(minutes: number): string {
   if (m === 0) return `${h} h`;
   return `${h} h ${m} min`;
 }
+
+export interface SpeedStats {
+  samples: number;
+  transcribeWaitMedianMs: number;
+  cleanupMedianMs: number;
+  totalWaitMedianMs: number;
+  fastModelShare: number;
+}
+
+/** "1.4 s" (one decimal; never shows 0.0 s). */
+export function formatSeconds(ms: number): string {
+  return `${Math.max(0.1, Math.round(ms / 100) / 10).toFixed(1)} s`;
+}
+
+/** Texts for the Speed card, or null when there are too few dictations to say anything. */
+export function speedSummary(speed: SpeedStats | undefined | null): {
+  total: string;
+  transcribe: string;
+  cleanup: string;
+  fast: string;
+} | null {
+  if (!speed || speed.samples < 3) return null;
+  const n = Math.round(speed.fastModelShare * speed.samples);
+  return {
+    total: formatSeconds(speed.totalWaitMedianMs),
+    transcribe: formatSeconds(speed.transcribeWaitMedianMs),
+    cleanup: formatSeconds(speed.cleanupMedianMs),
+    fast: n === 0 ? "None used the fast model" : `${n} of ${speed.samples} used the fast model`,
+  };
+}
