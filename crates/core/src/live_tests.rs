@@ -87,6 +87,8 @@ enum Act {
     ErrorNoId,
     /// `committed` names the wrong previous item, then carry on normally.
     WrongPrev,
+    /// `committed` leaves previous_item_id out (null), then completes normally.
+    NoPrev,
     /// Reject the commit (`error` naming it); the audio stays in the buffer, as on the real API.
     CommitError,
     /// Acknowledge the commit but never send a result.
@@ -216,13 +218,18 @@ async fn serve(tcp: tokio::net::TcpStream, conn: usize, log: Arc<Mutex<ServerLog
                 }
                 let item = format!("item_{conn}_{n}");
                 n += 1;
-                let prev = if act == Act::WrongPrev { Some("item_bogus".to_string()) } else { last.clone() };
+                let prev = match act {
+                    Act::WrongPrev => Some("item_bogus".to_string()),
+                    Act::NoPrev => None,
+                    _ => last.clone(),
+                };
                 let _ = tx.send(Some(json!({"type": "input_audio_buffer.committed", "item_id": item, "previous_item_id": prev})));
                 last = Some(item.clone());
                 log.lock().unwrap().commits.push((conn, buffered));
                 let samples = std::mem::take(&mut buffered);
                 let after_ms = match act {
                     Act::Complete { after_ms } => Some(after_ms),
+                    Act::NoPrev => Some(10),
                     Act::ErrorNoId | Act::WrongPrev => Some(10),
                     _ => None,
                 };
@@ -726,6 +733,18 @@ async fn forced_cut_during_continuous_speech_streams_each_piece_exactly() {
     let (id, _) = process(&h, rec).await;
     let rows = h.engine.db.segments(&id).unwrap();
     assert!(rows.len() >= 3, "pieces: {}", rows.len());
+    let from = sources(&h, &id);
+    assert!(from.iter().all(|f| *f == "live"), "{from:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn missing_previous_item_id_keeps_live_working() {
+    // If the server leaves previous_item_id out, commits still arrive in order, so live must
+    // keep being used (no fallback), with every piece matching its own audio.
+    let srv = fake_server(|_| Act::NoPrev, false).await;
+    let h = harness(Some(&srv.url), quick_tuning());
+    let rec = record(&h, &four_pieces());
+    let (id, _) = process(&h, rec).await;
     let from = sources(&h, &id);
     assert!(from.iter().all(|f| *f == "live"), "{from:?}");
 }

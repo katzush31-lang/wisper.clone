@@ -37,6 +37,15 @@ If Wispr Flow is still running, quit it first. Both apps use **Ctrl + Win** by d
 
 Wisper starts recording the instant you press the keys, so you don't need to pause before speaking. There is no time limit. Long dictations are transcribed in pieces while you're still talking, so they finish quickly.
 
+## Speed settings
+
+In **Settings → AI providers**:
+- **Live transcription** (on): Wisper transcribes while you talk, so text is ready as soon as you stop. Your recording is still saved; if the live connection drops, Wisper finishes from the recording.
+- **Use a faster model for short dictations** (on, under 30 seconds): short dictations are tidied by Claude Haiku, about twice as fast, with the same results in all our quality tests. Long ones use your main model.
+- **Skip the AI for tiny dictations** (off): very short sentences with nothing to fix are tidied instantly on your computer.
+
+**Insights** shows how long you wait after you stop talking.
+
 ## Using Wisper on more than one computer (optional)
 
 You don't need an account: Wisper works fully on its own. If you use it on several computers, open **Settings → Account → Sign in with Google**. Your settings, shortcuts, modes, dictionary, snippets and word counts then sync between your computers. History, recordings and Scratchpad notes stay on each computer.

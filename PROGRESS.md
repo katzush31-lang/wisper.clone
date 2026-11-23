@@ -14,6 +14,8 @@
 
 | 2026-11-23 | Accounts (optional) | Google Sign-In, encrypted cloud API keys (per-computer choice), sync of settings/dictionary/snippets/word counts via a Cloudflare Worker + D1 (`cloud/`). Design: `docs/ACCOUNTS.md`. Independent security review: 4 rounds, signed off. |
 
+| 2026-11-23 | Speed | Live transcription (OpenAI Realtime, per-piece fallback to the saved recording), fast model for short dictations (Haiku 12/12 golden, ~0.63 s vs 1.31 s), shared HTTP client + connection prewarm, Speed panel, optional local "skip the AI" path (off; CI eval 70/73 identical). Independent review signed off. |
+
 ## Decisions made during review
 - Spoken mode switch needs a pause/punctuation after the phrase ("As an email, …") or the word "mode/style/format" with a lead-in ("In list mode …"), so ordinary sentences are never cut.
 - Undo/redo of an inserted dictation works by Ctrl+Z + paste, so it's only allowed in the same window, within 2 minutes, and if nothing was typed since.

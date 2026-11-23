@@ -812,7 +812,9 @@ impl Worker {
                     // trusted to be the right piece.
                     return self.fail_conn(g, &format!("unexpected commit {item_id}")).await;
                 };
-                if c.last_item.is_some() && previous_item_id != c.last_item {
+                // Only a real conflict counts: if the server leaves previous_item_id empty we
+                // rely on commits arriving in order (they do), rather than dropping live.
+                if c.last_item.is_some() && previous_item_id.is_some() && previous_item_id != c.last_item {
                     let why = format!("item {item_id} follows {previous_item_id:?}, expected {:?}", c.last_item);
                     c.fifo.push_front(index);
                     return self.fail_conn(g, &why).await;

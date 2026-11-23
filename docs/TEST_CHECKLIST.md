@@ -75,3 +75,10 @@ Tick these off after installing. If something doesn't behave as described, note 
 - [ ] Your computers list shows both. Sign out the other one from here: it asks you to sign in again there, and its keys are only removed if they were the synced ones.
 - [ ] Sign out: Wisper keeps working (if keys were synced, paste them again or sign back in).
 - [ ] Without signing in at all, everything works exactly as before.
+
+## 10. Speed
+- [ ] Dictate a few short sentences: text appears noticeably faster than before. History shows "· live" and "Claude Haiku 5.5" for them.
+- [ ] Dictate for over 30 seconds: History shows your main model (Claude Sonnet 5.5).
+- [ ] Insights shows a Speed card after 3 dictations.
+- [ ] Turn Wi-Fi off mid-dictation, then on, then finish: the dictation still completes (from the saved recording).
+- [ ] Optional: turn on "Skip the AI for tiny dictations", say "Sounds good." — History shows "tidied on this computer".
