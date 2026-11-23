@@ -16,7 +16,7 @@ export default function HistoryRow({ item, onOpen }: { item: HistoryItem; onOpen
           {text ? <span className="home-snippet">{text}</span> : null}
           {st && (
             <span className={`home-chip ${st.tone}`}>
-              {st.label}
+              <span className="home-chip-label">{st.label}</span>
               {!text && <span className="home-chip-reason"> · {st.reason}</span>}
             </span>
           )}

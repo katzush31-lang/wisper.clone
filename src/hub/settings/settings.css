@@ -389,3 +389,12 @@
   font-size: 12px;
   line-height: 1.5;
 }
+.prompt-stack,
+.prompt-table,
+.setting-group-body > .prompt-intro {
+  padding: 14px 16px;
+}
+.setting-group-body > .prompt-intro {
+  margin: 0;
+  padding-bottom: 0;
+}
