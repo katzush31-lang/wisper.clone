@@ -281,7 +281,8 @@ impl Engine {
             return None;
         }
         let key = self.keys().openai.map(|k| k.trim().to_string()).filter(|k| !k.is_empty())?;
-        let endpoint = self.factory.live_endpoint()?;
+        // Paused after a recent failed connect or stall (bad network): use the normal path.
+        let endpoint = self.factory.live_endpoint().filter(|e| !e.breaker.tripped())?;
         let entries = self.db.dict_all().unwrap_or_default();
         // The context of earlier pieces is carried by the live session itself.
         let app_name = Some(app_name).filter(|n| !n.is_empty());

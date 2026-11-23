@@ -78,9 +78,19 @@ impl ProviderFactory for Fakes {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Act {
     Complete { after_ms: u64 },
+    /// Completes with an empty transcript.
+    Empty,
     Fail,
     /// Close the connection instead of answering.
     Drop,
+    /// An `error` event with no event id, then carry on normally.
+    ErrorNoId,
+    /// `committed` names the wrong previous item, then carry on normally.
+    WrongPrev,
+    /// Reject the commit (`error` naming it); the audio stays in the buffer, as on the real API.
+    CommitError,
+    /// Acknowledge the commit but never send a result.
+    Never,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -190,18 +200,38 @@ async fn serve(tcp: tokio::net::TcpStream, conn: usize, log: Arc<Mutex<ServerLog
             "input_audio_buffer.commit" => {
                 let info = CommitInfo { conn, global: global.fetch_add(1, Ordering::SeqCst) };
                 let act = behave(info);
-                if act == Act::Drop {
-                    let _ = tx.send(None);
-                    return;
+                match act {
+                    Act::Drop => {
+                        let _ = tx.send(None);
+                        return;
+                    }
+                    Act::CommitError => {
+                        let _ = tx.send(Some(json!({"type": "error", "error": {"type": "invalid_request_error", "message": "commit rejected", "event_id": v["event_id"]}})));
+                        continue;
+                    }
+                    Act::ErrorNoId => {
+                        let _ = tx.send(Some(json!({"type": "error", "error": {"type": "server_error", "message": "something went wrong"}})));
+                    }
+                    _ => {}
                 }
                 let item = format!("item_{conn}_{n}");
                 n += 1;
-                let _ = tx.send(Some(json!({"type": "input_audio_buffer.committed", "item_id": item, "previous_item_id": last})));
+                let prev = if act == Act::WrongPrev { Some("item_bogus".to_string()) } else { last.clone() };
+                let _ = tx.send(Some(json!({"type": "input_audio_buffer.committed", "item_id": item, "previous_item_id": prev})));
                 last = Some(item.clone());
                 log.lock().unwrap().commits.push((conn, buffered));
                 let samples = std::mem::take(&mut buffered);
+                let after_ms = match act {
+                    Act::Complete { after_ms } => Some(after_ms),
+                    Act::ErrorNoId | Act::WrongPrev => Some(10),
+                    _ => None,
+                };
                 match act {
-                    Act::Complete { after_ms } => {
+                    Act::Empty => {
+                        let _ = tx.send(Some(json!({"type": "conversation.item.input_audio_transcription.completed", "item_id": item, "content_index": 0, "transcript": " "})));
+                    }
+                    _ if after_ms.is_some() => {
+                        let after_ms = after_ms.unwrap();
                         let tx = tx.clone();
                         tokio::spawn(async move {
                             let _ = tx.send(Some(json!({"type": "conversation.item.input_audio_transcription.delta", "item_id": item, "delta": "live"})));
@@ -212,7 +242,7 @@ async fn serve(tcp: tokio::net::TcpStream, conn: usize, log: Arc<Mutex<ServerLog
                     Act::Fail => {
                         let _ = tx.send(Some(json!({"type": "conversation.item.input_audio_transcription.failed", "item_id": item, "error": {"message": "audio unclear"}})));
                     }
-                    Act::Drop => unreachable!(),
+                    _ => {}
                 }
             }
             _ => {}
@@ -225,6 +255,7 @@ async fn serve(tcp: tokio::net::TcpStream, conn: usize, log: Arc<Mutex<ServerLog
 struct Harness {
     engine: Arc<Engine>,
     stt: Arc<FileStt>,
+    breaker: Arc<super::Breaker>,
     _dir: tempfile::TempDir,
 }
 
@@ -236,13 +267,14 @@ fn harness(url: Option<&str>, tuning: LiveTuning) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let db = Arc::new(Db::open(&dir.path().join("wisper.db")).unwrap());
     let stt = Arc::new(FileStt::default());
-    let live = url.map(|u| LiveEndpoint { url: u.to_string(), tuning });
+    let live = url.map(|u| LiveEndpoint::new(u, tuning));
+    let breaker = live.as_ref().map(|l| l.breaker.clone()).unwrap_or_default();
     let factory = Arc::new(Fakes { stt: stt.clone(), live });
     let keys = ApiKeys { openai: Some("sk-test".into()), anthropic: None };
     let settings = Settings { cleanup_level: CleanupLevel::None, languages: vec!["en".into(), "he".into()], ..Default::default() };
     let retry = RetryPolicy { attempts: 2, base_delay_ms: 5, max_delay_ms: 10 };
     let engine = Engine::new_with_retry(db, dir.path().to_path_buf(), settings, keys, factory, retry);
-    Harness { engine, stt, _dir: dir }
+    Harness { engine, stt, breaker, _dir: dir }
 }
 
 /// 48 kHz stereo: a buzzy "voice" tone or near-silence, per (is_speech, ms).
@@ -408,15 +440,16 @@ async fn dropped_connection_reconnects_for_later_pieces() {
 #[tokio::test(flavor = "multi_thread")]
 async fn late_live_result_is_ignored_after_fallback() {
     // The last piece's live result comes long after the user stopped.
-    let srv = fake_server(|c| if c.global == 3 { Act::Complete { after_ms: 2_500 } } else { Act::Complete { after_ms: 10 } }, false).await;
-    let h = harness(Some(&srv.url), quick_tuning());
+    // (6 s late vs. a 0.3 s grace: a wide margin, so a slow machine can't blur the two.)
+    let srv = fake_server(|c| if c.global == 3 { Act::Complete { after_ms: 6_000 } } else { Act::Complete { after_ms: 10 } }, false).await;
+    let h = harness(Some(&srv.url), LiveTuning { stop_grace: Duration::from_millis(300), ..quick_tuning() });
     let rec = record(&h, &four_pieces());
     let (id, took) = process(&h, rec).await;
-    assert!(took < Duration::from_millis(2_300), "waited {took:?} for a late result");
+    assert!(took < Duration::from_millis(4_000), "waited {took:?} for a late result");
     let from = sources(&h, &id);
     assert_eq!(from, vec!["live", "live", "live", "file"]);
     // Let the late result arrive: nothing changes and nothing is doubled.
-    tokio::time::sleep(Duration::from_millis(2_600)).await;
+    tokio::time::sleep(Duration::from_millis(6_300)).await;
     let again = sources(&h, &id);
     assert_eq!(again, from);
     assert_eq!(h.stt.calls.load(Ordering::SeqCst), 1);
@@ -430,12 +463,14 @@ async fn connect_failure_uses_the_normal_path_without_waiting() {
         l.local_addr().unwrap().port()
     };
     let url = format!("ws://127.0.0.1:{port}/v1/realtime");
-    let h = harness(Some(&url), LiveTuning::default());
+    // A long grace: if the failed connection made us wait for it, this would take 10 s+.
+    let h = harness(Some(&url), LiveTuning { stop_grace: Duration::from_secs(10), ..LiveTuning::default() });
     let rec = record(&h, &four_pieces());
     let (id, took) = process(&h, rec).await;
     let from = sources(&h, &id);
     assert!(from.iter().all(|f| *f == "file"), "{from:?}");
-    assert!(took < Duration::from_millis(1_500), "took {took:?}");
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+    assert!(h.breaker.tripped(), "a failed connect pauses live transcription");
     let t = timings(&h, &id);
     assert_eq!(t["live"], false);
     assert_eq!(t["liveConnected"], false);
@@ -551,11 +586,13 @@ async fn long_dictations_rotate_to_fresh_sessions_without_losing_pieces() {
     assert!(from.iter().all(|f| *f == "live"), "{from:?}");
     // Old sessions are closed once their pieces are back.
     for _ in 0..100 {
-        let log = srv.log.lock().unwrap();
-        if log.closed == log.connections {
+        let all_closed = {
+            let log = srv.log.lock().unwrap();
+            log.closed == log.connections
+        };
+        if all_closed {
             break;
         }
-        drop(log);
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let log = srv.log.lock().unwrap();
@@ -563,4 +600,132 @@ async fn long_dictations_rotate_to_fresh_sessions_without_losing_pieces() {
     assert_eq!(log.closed, log.connections);
     // Each piece was committed exactly once, across the sessions.
     assert_eq!(log.commits.len(), from.len());
+}
+
+/// A server that accepts the TCP connection and then never answers (a bad network or a
+/// captive portal). Returns its URL and how many connections it has accepted.
+async fn hanging_server() -> (String, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/v1/realtime?intent=transcription", listener.local_addr().unwrap());
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let a = accepted.clone();
+    tokio::spawn(async move {
+        let mut held = vec![];
+        while let Ok((tcp, _)) = listener.accept().await {
+            a.fetch_add(1, Ordering::SeqCst);
+            held.push(tcp);
+        }
+    });
+    (url, accepted)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hanging_connect_adds_no_wait_and_pauses_live() {
+    let (url, accepted) = hanging_server().await;
+    // Long grace: waiting on the hung connection would show up as 10 s+.
+    let tuning = LiveTuning { connect_timeout: Duration::from_millis(1_000), stop_grace: Duration::from_secs(10), ..LiveTuning::default() };
+    let h = harness(Some(&url), tuning);
+    let rec = record(&h, &four_pieces());
+    let (id, took) = process(&h, rec).await;
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+    let from = sources(&h, &id);
+    assert!(from.iter().all(|f| *f == "file"), "{from:?}");
+    assert_eq!(timings(&h, &id)["liveConnected"], false);
+    // The attempt times out in the background and pauses live transcription...
+    for _ in 0..100 {
+        if h.breaker.tripped() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(h.breaker.tripped());
+    assert_eq!(accepted.load(Ordering::SeqCst), 1);
+    // ...so the next dictation doesn't try at all.
+    let rec = record(&h, &[(true, 3_000), (false, 500)]);
+    let (id, took) = process(&h, rec).await;
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+    assert_eq!(sources(&h, &id), vec!["file"]);
+    assert_eq!(timings(&h, &id)["liveTried"], false);
+    assert_eq!(accepted.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stalled_session_falls_back_and_pauses_live() {
+    let srv = fake_server(|_| Act::Never, false).await;
+    let tuning = LiveTuning { stall_timeout: Duration::from_millis(500), stop_grace: Duration::from_secs(10), ..quick_tuning() };
+    let h = harness(Some(&srv.url), tuning);
+    let rec = record(&h, &four_pieces());
+    let (id, took) = process(&h, rec).await;
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+    let from = sources(&h, &id);
+    assert!(from.iter().all(|f| *f == "file"), "{from:?}");
+    assert!(h.breaker.tripped());
+    let rec = record(&h, &[(true, 3_000), (false, 500)]);
+    let (id, _) = process(&h, rec).await;
+    assert_eq!(timings(&h, &id)["liveTried"], false);
+    assert_eq!(srv.log.lock().unwrap().connections, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn empty_live_transcript_is_transcribed_again_the_normal_way() {
+    let srv = fake_server(|c| if c.global == 1 { Act::Empty } else { Act::Complete { after_ms: 10 } }, false).await;
+    let h = harness(Some(&srv.url), quick_tuning());
+    let rec = record(&h, &four_pieces());
+    let (id, _) = process(&h, rec).await;
+    let from = sources(&h, &id);
+    assert_eq!(from[1], "file", "{from:?}");
+    assert!(from.iter().enumerate().all(|(i, f)| i == 1 || *f == "live"), "{from:?}");
+    assert_eq!(timings(&h, &id)["fallbackPieces"], 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn error_without_event_id_drops_the_connection_and_keeps_text_complete() {
+    let srv = fake_server(|c| if c.conn == 0 && c.global == 1 { Act::ErrorNoId } else { Act::Complete { after_ms: 10 } }, false).await;
+    let h = harness(Some(&srv.url), quick_tuning());
+    let rec = record(&h, &four_pieces());
+    let (id, _) = process(&h, rec).await;
+    // sources() checks every piece's text matches its own audio, in order, nothing doubled.
+    let from = sources(&h, &id);
+    assert_eq!(from[1], "file", "{from:?}");
+    assert!(from.len() >= 3);
+    let log = srv.log.lock().unwrap();
+    assert!(log.closed >= 1, "the connection that reported the error was dropped");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn item_order_mismatch_drops_the_connection() {
+    let srv = fake_server(|c| if c.conn == 0 && c.global == 2 { Act::WrongPrev } else { Act::Complete { after_ms: 10 } }, false).await;
+    let h = harness(Some(&srv.url), quick_tuning());
+    let rec = record(&h, &four_pieces());
+    let (id, _) = process(&h, rec).await;
+    let from = sources(&h, &id);
+    assert_eq!(from[2], "file", "{from:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_commit_clears_leftover_audio() {
+    // The server rejects piece 1's commit and keeps its audio, as the real API does. Without a
+    // clear, piece 2's live text would cover both pieces' audio (sources() would catch that).
+    let srv = fake_server(|c| if c.global == 1 { Act::CommitError } else { Act::Complete { after_ms: 10 } }, false).await;
+    let h = harness(Some(&srv.url), quick_tuning());
+    let rec = record(&h, &four_pieces());
+    let (id, _) = process(&h, rec).await;
+    let from = sources(&h, &id);
+    assert_eq!(from[1], "file", "{from:?}");
+    assert_eq!(*from.last().unwrap(), "live", "{from:?}");
+    assert!(srv.log.lock().unwrap().clears >= 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn forced_cut_during_continuous_speech_streams_each_piece_exactly() {
+    // 100 s without a pause: the segmenter cuts at its 45 s limit, at the quietest point in
+    // the last 10 s (which is behind the live stream's position).
+    let srv = fake_server(|_| Act::Complete { after_ms: 10 }, false).await;
+    let h = harness(Some(&srv.url), quick_tuning());
+    let rec = record(&h, &[(true, 100_000), (false, 400)]);
+    let (id, _) = process(&h, rec).await;
+    let rows = h.engine.db.segments(&id).unwrap();
+    assert!(rows.len() >= 3, "pieces: {}", rows.len());
+    let from = sources(&h, &id);
+    assert!(from.iter().all(|f| *f == "live"), "{from:?}");
 }

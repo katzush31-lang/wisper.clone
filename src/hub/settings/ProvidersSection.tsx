@@ -179,7 +179,7 @@ export default function ProvidersSection({ settings, update }: SectionProps) {
         </SettingRow>
         <SettingRow
           title="Live transcription"
-          description="Wisper transcribes while you talk, so text is ready as soon as you stop. Your recording is still saved, so nothing is lost if the connection drops."
+          description="Wisper transcribes while you talk, so text is ready as soon as you stop. Your voice is sent to OpenAI as you speak, even if you then cancel. Your recording is still saved, so nothing is lost if the connection drops."
         >
           <Switch label="Live transcription" checked={settings.providers.liveTranscription} onChange={(liveTranscription) => setProviders({ liveTranscription })} />
         </SettingRow>

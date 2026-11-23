@@ -35,11 +35,40 @@ use crate::providers::{ErrorKind, ProviderError};
 pub struct LiveEndpoint {
     pub url: String,
     pub tuning: LiveTuning,
+    /// Turns live transcription off for a while after it couldn't connect or stalled.
+    pub breaker: Arc<Breaker>,
 }
 
 impl LiveEndpoint {
+    /// OpenAI, with the app-wide breaker.
     pub fn openai() -> Self {
-        Self { url: realtime::URL.into(), tuning: LiveTuning::default() }
+        static BREAKER: std::sync::OnceLock<Arc<Breaker>> = std::sync::OnceLock::new();
+        Self { url: realtime::URL.into(), tuning: LiveTuning::default(), breaker: BREAKER.get_or_init(Default::default).clone() }
+    }
+
+    /// Any URL, with its own breaker (tests).
+    pub fn new(url: &str, tuning: LiveTuning) -> Self {
+        Self { url: url.into(), tuning, breaker: Arc::default() }
+    }
+}
+
+/// Circuit breaker for bad networks: after live transcription failed to connect (or its
+/// session stalled), it's skipped for a while and dictations use the normal path directly,
+/// instead of paying for another doomed attempt each time. In memory only.
+#[derive(Debug, Default)]
+pub struct Breaker {
+    until: Mutex<Option<std::time::Instant>>,
+}
+
+impl Breaker {
+    pub fn trip(&self, cooldown: Duration, why: &str) {
+        tracing::info!("live transcription paused for {} min: {why}", cooldown.as_secs() / 60);
+        *self.until.lock().unwrap_or_else(|p| p.into_inner()) = Some(std::time::Instant::now() + cooldown);
+    }
+
+    /// True while live transcription should be skipped.
+    pub fn tripped(&self) -> bool {
+        self.until.lock().unwrap_or_else(|p| p.into_inner()).is_some_and(|u| std::time::Instant::now() < u)
     }
 }
 
@@ -63,6 +92,10 @@ pub struct LiveTuning {
     pub rotate_after: Duration,
     /// Most audio (24 kHz samples) held while the connection is slow or still opening.
     pub max_backlog_samples: usize,
+    /// A session with pieces waiting that hasn't said anything for this long has stalled.
+    pub stall_timeout: Duration,
+    /// How long live transcription is skipped after a failed connect or a stall.
+    pub breaker_cooldown: Duration,
 }
 
 impl Default for LiveTuning {
@@ -76,16 +109,28 @@ impl Default for LiveTuning {
             max_reconnects: 2,
             rotate_after: Duration::from_secs(25 * 60),
             max_backlog_samples: 60 * realtime::SAMPLE_RATE as usize,
+            stall_timeout: Duration::from_secs(10),
+            breaker_cooldown: Duration::from_secs(10 * 60),
         }
     }
 }
 
 /// Everything needed to open live sessions for one dictation.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LiveSetup {
     pub endpoint: LiveEndpoint,
     pub key: String,
     pub session: SessionConfig,
+}
+
+impl std::fmt::Debug for LiveSetup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiveSetup")
+            .field("endpoint", &self.endpoint)
+            .field("key", &if self.key.is_empty() { "(none)" } else { "(redacted)" })
+            .field("session", &self.session)
+            .finish()
+    }
 }
 
 /// For History: whether live transcription was used and how it went.
@@ -187,7 +232,9 @@ impl LiveShared {
                 _ => (n, a),
             });
             st.stopped_at = Some(now);
-            st.stop_deadline = Some(now + stop_allowance(&self.tuning, n, audio_ms));
+            // Never connected: nothing is coming, so don't make the user wait for it.
+            let allowance = if st.summary.connected { stop_allowance(&self.tuning, n, audio_ms) } else { Duration::ZERO };
+            st.stop_deadline = Some(now + allowance);
         }
         self.bump();
     }
@@ -226,10 +273,18 @@ impl LiveShared {
                 let mut st = self.lock();
                 let now = Instant::now();
                 match st.slots.get(&index).cloned() {
-                    Some(Slot::Ready(Ok(t))) => {
+                    Some(Slot::Ready(Ok(t))) if !t.trim().is_empty() => {
                         st.slots.insert(index, Slot::Settled);
                         st.summary.live_pieces += 1;
                         return Some(t);
+                    }
+                    Some(Slot::Ready(Ok(_))) => {
+                        // The piece has speech, so an empty transcript is suspect: get a second
+                        // opinion from the normal path rather than saving nothing.
+                        st.slots.insert(index, Slot::Settled);
+                        st.summary.fallback_pieces += 1;
+                        tracing::info!("live transcript of piece {index} was empty; transcribing it from the saved audio");
+                        return None;
                     }
                     Some(Slot::Ready(Err(e))) => {
                         st.slots.insert(index, Slot::Settled);
@@ -436,6 +491,8 @@ struct Conn {
     /// Pieces sent on this connection still without a result.
     outstanding: HashSet<usize>,
     last_item: Option<String>,
+    /// When the server last said anything (or a wait for it began), to spot a stalled session.
+    last_heard: Instant,
     draining: bool,
     reader: JoinHandle<()>,
 }
@@ -510,8 +567,9 @@ impl Worker {
                     }
                 },
                 Some((gen, ev)) = self.evt_rx.recv() => self.on_event(gen, ev).await,
-                _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
             }
+            self.check_stalls().await;
             if self.stopping {
                 let waited = self.shared.stopped_for().unwrap_or_default();
                 if self.shared.waiting() == 0 || waited > Duration::from_secs(60) {
@@ -553,6 +611,9 @@ impl Worker {
                     let _ = tx.send((gen, Event::Closed(reason)));
                 }
                 Err(e) => {
+                    // Tripped here, not in the worker, so a connect that is still trying when the
+                    // dictation ends is still noticed.
+                    setup.endpoint.breaker.trip(t.breaker_cooldown, &format!("couldn't connect ({e})"));
                     let _ = tx.send((gen, Event::OpenFailed(e)));
                 }
             }
@@ -569,6 +630,7 @@ impl Worker {
                 early: HashMap::new(),
                 outstanding: HashSet::new(),
                 last_item: None,
+                last_heard: Instant::now(),
                 draining: false,
                 reader,
             },
@@ -594,7 +656,7 @@ impl Worker {
                     Some(g)
                 }
             }
-            None if self.ever_connected && !self.fatal && !self.stopping && self.reconnects_left > 0 => {
+            None if self.ever_connected && !self.fatal && !self.stopping && self.reconnects_left > 0 && !self.setup.endpoint.breaker.tripped() => {
                 self.reconnects_left -= 1;
                 tracing::info!("live transcription: reconnecting for the next piece");
                 let n = self.open_conn();
@@ -680,6 +742,9 @@ impl Worker {
             }
             ConnState::Ready(sink) => {
                 if let Out::Commit(i) = o {
+                    if c.outstanding.is_empty() {
+                        c.last_heard = Instant::now();
+                    }
                     c.fifo.push_back(i);
                     c.outstanding.insert(i);
                 }
@@ -739,14 +804,18 @@ impl Worker {
 
     async fn on_server(&mut self, g: u32, se: ServerEvent) {
         let Some(c) = self.conns.get_mut(&g) else { return };
+        c.last_heard = Instant::now();
         match se {
             ServerEvent::Committed { item_id, previous_item_id } => {
                 let Some(index) = c.fifo.pop_front() else {
-                    tracing::warn!("live transcription: unexpected commit {item_id}");
-                    return;
+                    // Pieces and items no longer line up; nothing on this connection can be
+                    // trusted to be the right piece.
+                    return self.fail_conn(g, &format!("unexpected commit {item_id}")).await;
                 };
                 if c.last_item.is_some() && previous_item_id != c.last_item {
-                    tracing::debug!("live transcription: item {item_id} follows {previous_item_id:?}, expected {:?}", c.last_item);
+                    let why = format!("item {item_id} follows {previous_item_id:?}, expected {:?}", c.last_item);
+                    c.fifo.push_front(index);
+                    return self.fail_conn(g, &why).await;
                 }
                 c.last_item = Some(item_id.clone());
                 if let Some(r) = c.early.remove(&item_id) {
@@ -776,24 +845,55 @@ impl Worker {
             },
             ServerEvent::Error { event_id, code, message } => {
                 if let Some(index) = event_id.as_deref().and_then(realtime::commit_index) {
-                    c.fifo.retain(|&i| i != index);
+                    // The commit failed, so its audio is still in the server's buffer. Any
+                    // piece committed after it (before we heard) got that audio glued on, and so
+                    // may the piece being recorded: all of those go the normal way, and the
+                    // buffer is cleared so the leftover can't reach later pieces.
+                    tracing::info!("live transcription: commit of piece {index} failed ({code:?}: {message})");
+                    let pos = c.fifo.iter().position(|&i| i == index);
+                    let glued: Vec<usize> = pos.map(|p| c.fifo.iter().skip(p + 1).copied().collect()).unwrap_or_default();
+                    if let Some(p) = pos {
+                        c.fifo.remove(p);
+                    }
                     c.outstanding.remove(&index);
                     self.shared.resolve(index, Err(message));
-                } else if event_id.as_deref().is_some_and(|e| e.starts_with("clear-")) {
-                    tracing::debug!("live transcription: clear failed: {message}");
-                } else {
-                    // Can't tell what it hit (e.g. an audio append): the open piece may be
-                    // missing audio, so it is transcribed the normal way.
-                    tracing::warn!("live transcription error ({code:?}): {message}");
+                    for i in glued {
+                        c.outstanding.remove(&i);
+                        self.shared.resolve(i, Err("sent after a failed piece".into()));
+                    }
                     if self.current == Some(g) && self.bound {
                         self.current = None;
                         self.taint = Some(g);
                     }
+                    self.out(g, Out::Clear(index)).await;
+                } else if event_id.as_deref().is_some_and(|e| e.starts_with("clear-")) {
+                    tracing::debug!("live transcription: clear failed: {message}");
+                } else {
+                    // Can't tell what it hit (an audio append, the session itself): the
+                    // pieces on this connection may be missing audio or mismatched, so they all
+                    // go the normal way and the connection is dropped.
+                    return self.fail_conn(g, &format!("error ({code:?}): {message}")).await;
                 }
             }
             ServerEvent::Delta { .. } | ServerEvent::SessionUpdated | ServerEvent::Other(_) => {}
         }
         self.close_if_drained(g).await;
+    }
+
+    /// A session with pieces waiting that has gone quiet has stalled: its pieces go the normal
+    /// way, and live transcription is paused for a while.
+    async fn check_stalls(&mut self) {
+        let limit = self.tuning().stall_timeout;
+        let stalled: Vec<u32> = self
+            .conns
+            .iter()
+            .filter(|(_, c)| matches!(c.state, ConnState::Ready(_)) && !c.outstanding.is_empty() && c.last_heard.elapsed() >= limit)
+            .map(|(g, _)| *g)
+            .collect();
+        for g in stalled {
+            self.setup.endpoint.breaker.trip(self.tuning().breaker_cooldown, "the live session stopped answering");
+            self.fail_conn(g, "stalled").await;
+        }
     }
 
     async fn close_if_drained(&mut self, g: u32) {
@@ -832,10 +932,15 @@ fn message(o: &Out) -> String {
 }
 
 async fn close(c: Conn) {
-    if let ConnState::Ready(mut sink) = c.state {
-        let _ = tokio::time::timeout(Duration::from_secs(2), sink.close()).await;
+    match c.state {
+        ConnState::Ready(mut sink) => {
+            let _ = tokio::time::timeout(Duration::from_secs(2), sink.close()).await;
+            c.reader.abort();
+        }
+        // Still connecting: let the attempt finish on its own (bounded by the connect timeout)
+        // so a failure still trips the breaker; if it succeeds, it closes itself.
+        ConnState::Opening => {}
     }
-    c.reader.abort();
 }
 
 #[cfg(test)]
@@ -890,6 +995,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn gives_up_shortly_after_stop_and_ignores_late_results() {
         let s = LiveShared::new(tuning());
+        s.mark_connected();
         s.register(3, 2000);
         let t0 = Instant::now();
         s.stop();
@@ -900,6 +1006,51 @@ mod tests {
         assert_eq!(s.summary().late_ignored, 1);
         // Never-registered pieces (not sent live) fall back immediately.
         assert_eq!(s.wait(9).await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn never_connected_means_no_wait_after_stop() {
+        let s = LiveShared::new(tuning());
+        s.register(0, 3000);
+        let t0 = Instant::now();
+        s.stop();
+        assert_eq!(s.wait(0).await, None);
+        assert_eq!(t0.elapsed(), Duration::ZERO);
+        assert_eq!(s.summary().fallback_pieces, 1);
+    }
+
+    #[tokio::test]
+    async fn empty_live_transcript_counts_as_a_fallback() {
+        let s = LiveShared::new(tuning());
+        s.register(0, 1000);
+        s.resolve(0, Ok("  ".into()));
+        assert_eq!(s.wait(0).await, None);
+        assert_eq!(s.summary().live_pieces, 0);
+        assert_eq!(s.summary().fallback_pieces, 1);
+    }
+
+    #[test]
+    fn debug_output_never_shows_the_key() {
+        let setup = LiveSetup {
+            endpoint: LiveEndpoint::openai(),
+            key: "sk-secret-123".into(),
+            session: SessionConfig { model: "gpt-transcribe".into(), prompt: None, keywords: vec![], languages: vec![] },
+        };
+        let d = format!("{setup:?}");
+        assert!(!d.contains("sk-secret-123"), "{d}");
+        assert!(d.contains("redacted"));
+    }
+
+    #[test]
+    fn breaker_pauses_then_recovers() {
+        let b = Breaker::default();
+        assert!(!b.tripped());
+        b.trip(Duration::from_millis(30), "test");
+        assert!(b.tripped());
+        std::thread::sleep(Duration::from_millis(40));
+        assert!(!b.tripped());
+        // The app-wide OpenAI endpoint shares one breaker.
+        assert!(Arc::ptr_eq(&LiveEndpoint::openai().breaker, &LiveEndpoint::openai().breaker));
     }
 
     #[tokio::test(start_paused = true)]
