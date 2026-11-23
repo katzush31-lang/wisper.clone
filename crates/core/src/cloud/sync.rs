@@ -29,6 +29,11 @@ const META_REMOVED_SEEN: &str = "key_removed_seen";
 /// Shown when the account's keys were removed from another computer.
 pub const KEYS_REMOVED_NOTICE: &str = "Your API keys were removed from your account, so this computer now keeps its own copy.";
 const META_MODE: &str = "key_storage_mode";
+/// Why this computer is still asking where keys should live (`own_only` / `differ`); only
+/// meaningful while the choice is not made.
+const META_SITUATION: &str = "key_choice_situation";
+/// Shown when this computer picked "Your account (synced)" by itself after signing in.
+pub const KEYS_AUTO_SYNCED_NOTICE: &str = "Your API keys are now synced from your account.";
 const META_BACKUP_FOR: &str = "backup_done_for";
 const CURSORS: [&str; 3] = ["sync_items_pull", "sync_stats_push", "sync_stats_pull"];
 
@@ -61,6 +66,9 @@ pub struct SyncReport {
     /// Set when this computer switched itself to local key storage (and why).
     pub notice: Option<String>,
     pub switched_to_local: bool,
+    /// Set when this computer chose "Your account (synced)" by itself (nothing could be
+    /// overwritten); the keys were pulled in the same sync.
+    pub auto_chose_cloud: bool,
 }
 
 impl SyncReport {
@@ -132,6 +140,16 @@ impl SyncEngine {
         self.meta(META_CHOSEN).as_deref() == Some("1")
     }
 
+    /// While the choice is not made and this computer must ask: `own_only` (this computer has
+    /// keys, the account has none: they would be uploaded) or `differ` (the account's keys would
+    /// be used here, and this computer's different ones kept as a backup). None otherwise.
+    pub fn key_choice_situation(&self) -> Option<String> {
+        if self.key_storage_chosen() {
+            return None;
+        }
+        self.meta(META_SITUATION)
+    }
+
     /// When the last fully successful sync finished (unix ms).
     pub fn last_sync(&self) -> Option<i64> {
         Some(self.meta_i64(META_LAST_OK)).filter(|t| *t > 0)
@@ -178,6 +196,7 @@ impl SyncEngine {
         self.set_meta(META_USER, &info.id)?;
         self.set_meta(META_ACCOUNT, &serde_json::to_string(&info).unwrap())?;
         self.set_meta(META_CHOSEN, "0")?;
+        let _ = self.db.delete_meta(META_SITUATION);
         for c in CURSORS {
             let _ = self.db.delete_meta(c);
         }
@@ -209,6 +228,7 @@ impl SyncEngine {
             let _ = self.db.delete_meta(key);
         }
         let _ = self.db.set_meta(META_CHOSEN, "0");
+        let _ = self.db.delete_meta(META_SITUATION);
         let _ = self.db.remote_stats_clear();
         self.pushed_stats.lock().unwrap().clear();
     }
@@ -297,6 +317,8 @@ impl SyncEngine {
         // 4. API keys (only when this computer keeps them in the account).
         if self.keys_sync_active() {
             report.keys_changed = self.sync_keys(&mut report).await?;
+        } else if !self.key_storage_chosen() {
+            self.decide_key_storage(&mut report).await?;
         }
 
         self.set_meta(META_MERGED, "1")?;
@@ -364,6 +386,43 @@ impl SyncEngine {
             }
         }
         Ok(added > 0)
+    }
+
+    /// Runs inside a sync (so under the lock) while the user hasn't chosen where keys live.
+    /// When nothing on this computer can be overwritten or lost, picks "Your account (synced)"
+    /// and pulls the keys right away:
+    ///  - this computer has no keys of its own and the account has some, or
+    ///  - every key this computer has is already the account's key.
+    /// Otherwise the user is asked: `own_only` (own keys, account has none) or `differ`.
+    /// Neither side having keys is left to the user too (nothing to sync yet).
+    async fn decide_key_storage(&self, report: &mut SyncReport) -> CloudResult<()> {
+        let remote = self.client.get_keys().await?;
+        let account_has = PROVIDERS.iter().any(|p| remote.get(p).is_some());
+        let local: Vec<(&str, String)> = PROVIDERS.iter().filter_map(|p| self.keys.get(p).filter(|k| !k.is_empty()).map(|k| (*p, k))).collect();
+        let all_in_account = local.iter().all(|(p, k)| remote.get(p).map(|r| r.key == *k).unwrap_or(false));
+        if account_has && (local.is_empty() || all_in_account) {
+            let mut sub = SyncReport::default();
+            let changed = self.sync_keys(&mut sub).await?;
+            report.keys_changed = changed;
+            if sub.switched_to_local {
+                // The account's keys were removed on purpose: stay local and keep everything.
+                report.notice = sub.notice;
+                report.switched_to_local = true;
+                self.set_meta(META_MODE, "local")?;
+            } else {
+                self.set_meta(META_MODE, "cloud")?;
+                report.auto_chose_cloud = true;
+                report.notice = Some(KEYS_AUTO_SYNCED_NOTICE.to_string());
+            }
+            self.set_meta(META_CHOSEN, "1")?;
+            let _ = self.db.delete_meta(META_SITUATION);
+        } else if !local.is_empty() {
+            let s = if account_has { "differ" } else { "own_only" };
+            self.set_meta(META_SITUATION, s)?;
+        } else {
+            let _ = self.db.delete_meta(META_SITUATION);
+        }
+        Ok(())
     }
 
     /// Reconciles this computer's keys with the account's (cloud storage only). Per provider:

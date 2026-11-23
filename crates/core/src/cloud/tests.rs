@@ -298,6 +298,12 @@ impl Computer {
         self.sync().await;
     }
 
+    /// Sign-in (code exchange) and the first sync, returning that sync's report.
+    async fn sync_after_sign_in(&mut self, user: &str) -> SyncReport {
+        self.engine.complete_sign_in(&format!("google:{user}"), "verifier", "My PC").await.unwrap();
+        self.sync().await
+    }
+
     async fn choose(&mut self, storage: KeyStorage) {
         self.engine.set_key_storage(storage).await.unwrap();
         // The app mirrors the choice into settings for the UI (it is per computer, never synced).
@@ -990,4 +996,91 @@ async fn choosing_cloud_again_after_own_removal_sticks_even_with_no_keys() {
     assert!(!r.switched_to_local);
     assert!(r.notice.is_none());
     assert_eq!(a.engine.key_storage(), Some(KeyStorage::Cloud));
+}
+
+// ---------------------------------------------------------------- automatic key choice
+
+#[tokio::test]
+async fn second_computer_with_no_keys_gets_the_accounts_keys_at_sign_in_without_any_click() {
+    let fake = Fake::start().await;
+    let (mut a, mut b) = (Computer::new(&fake.url()), Computer::new(&fake.url()));
+    a.sign_in("u1").await;
+    a.choose(KeyStorage::Cloud).await;
+    a.set_key("anthropic", KEY_A).await;
+    a.set_key("openai", KEY_B).await;
+
+    b.engine.complete_sign_in("google:u1", "verifier", "Second PC").await.unwrap();
+    let r = b.sync().await; // the sync that follows sign-in
+    assert_eq!(b.keys.get("anthropic").as_deref(), Some(KEY_A));
+    assert_eq!(b.keys.get("openai").as_deref(), Some(KEY_B));
+    assert!(r.keys_changed && r.auto_chose_cloud && !r.switched_to_local);
+    assert_eq!(r.notice.as_deref(), Some(KEYS_AUTO_SYNCED_NOTICE));
+    assert!(b.engine.key_storage_chosen());
+    assert_eq!(b.engine.key_storage(), Some(KeyStorage::Cloud));
+    assert_eq!(b.engine.key_choice_situation(), None);
+    // Later changes keep flowing without any user action.
+    a.set_key("anthropic", "sk-ant-rotated-cccccccccccccccc").await;
+    b.sync().await;
+    assert_eq!(b.keys.get("anthropic").as_deref(), Some("sk-ant-rotated-cccccccccccccccc"));
+}
+
+#[tokio::test]
+async fn the_choice_is_retried_on_later_syncs_while_not_chosen() {
+    let fake = Fake::start().await;
+    let (mut a, mut b) = (Computer::new(&fake.url()), Computer::new(&fake.url()));
+    b.sign_in("u1").await; // account has no keys yet: nothing to decide
+    assert!(!b.engine.key_storage_chosen());
+    a.sign_in("u1").await;
+    a.choose(KeyStorage::Cloud).await;
+    a.set_key("anthropic", KEY_A).await;
+    let r = b.sync().await;
+    assert!(r.auto_chose_cloud);
+    assert_eq!(b.keys.get("anthropic").as_deref(), Some(KEY_A));
+    assert_eq!(b.engine.key_storage(), Some(KeyStorage::Cloud));
+}
+
+#[tokio::test]
+async fn second_computer_with_its_own_different_keys_is_asked_and_nothing_is_overwritten() {
+    let fake = Fake::start().await;
+    let (mut a, mut b) = (Computer::new(&fake.url()), Computer::new(&fake.url()));
+    a.sign_in("u1").await;
+    a.choose(KeyStorage::Cloud).await;
+    a.set_key("anthropic", KEY_A).await;
+    b.keys.set("anthropic", "sk-ant-own-on-b-dddddddddddddd");
+    let r = b.sync_after_sign_in("u1").await;
+    assert!(!r.auto_chose_cloud && !r.keys_changed);
+    assert!(!b.engine.key_storage_chosen());
+    assert_eq!(b.engine.key_storage(), None);
+    assert_eq!(b.engine.key_choice_situation().as_deref(), Some("differ"));
+    assert_eq!(b.keys.get("anthropic").as_deref(), Some("sk-ant-own-on-b-dddddddddddddd"));
+    assert_eq!(fake.server_keys().get("anthropic").map(String::as_str), Some(KEY_A));
+    b.sync().await; // more syncs don't decide for the user either
+    assert!(!b.engine.key_storage_chosen());
+    assert_eq!(b.keys.get("anthropic").as_deref(), Some("sk-ant-own-on-b-dddddddddddddd"));
+}
+
+#[tokio::test]
+async fn own_keys_and_an_empty_account_still_asks() {
+    let fake = Fake::start().await;
+    let mut b = Computer::new(&fake.url());
+    b.keys.set("openai", KEY_B);
+    let r = b.sync_after_sign_in("u1").await;
+    assert!(!r.auto_chose_cloud);
+    assert!(!b.engine.key_storage_chosen());
+    assert_eq!(b.engine.key_choice_situation().as_deref(), Some("own_only"));
+    assert!(fake.server_keys().is_empty(), "nothing is uploaded before the user chooses");
+}
+
+#[tokio::test]
+async fn the_same_keys_on_both_sides_choose_the_account_automatically() {
+    let fake = Fake::start().await;
+    let (mut a, mut b) = (Computer::new(&fake.url()), Computer::new(&fake.url()));
+    a.sign_in("u1").await;
+    a.choose(KeyStorage::Cloud).await;
+    a.set_key("anthropic", KEY_A).await;
+    b.keys.set("anthropic", KEY_A);
+    let r = b.sync_after_sign_in("u1").await;
+    assert!(r.auto_chose_cloud && !r.keys_changed);
+    assert_eq!(b.engine.key_storage(), Some(KeyStorage::Cloud));
+    assert_eq!(b.keys.get("anthropic").as_deref(), Some(KEY_A));
 }
