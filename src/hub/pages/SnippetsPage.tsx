@@ -61,7 +61,7 @@ export default function SnippetsPage() {
       <div className="page-header">
         <h1 className="page-title">Snippets</h1>
         <div className="lib-actions">
-          <button className="btn btn-dark" onClick={() => setImporting(true)}>
+          <button className="btn btn-soft" onClick={() => setImporting(true)}>
             Import
           </button>
           <button className="btn btn-dark" onClick={add}>
@@ -88,7 +88,7 @@ export default function SnippetsPage() {
             <X size={16} />
           </button>
           <h2>
-            The stuff <em>you</em> shouldn’t have to re-type.
+            Stop re-typing the same things.
           </h2>
           <p className="lib-hero-text">
             Save text you type often — an email, an address, a reply — then say a short phrase to drop it in

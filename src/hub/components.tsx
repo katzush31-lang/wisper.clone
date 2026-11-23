@@ -75,16 +75,52 @@ export function Modal({
   footer?: ReactNode;
   width?: number;
 }) {
+  const boxRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
+  // Focus moves into the dialog when it opens and back to where it was when it closes.
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.activeElement as HTMLElement | null;
+    const box = boxRef.current;
+    const first = box?.querySelector<HTMLElement>("[autofocus], input, textarea, select");
+    (first ?? box)?.focus();
+    return () => prev?.focus?.();
+  }, [open]);
+  // Keep Tab inside the dialog.
+  const trapTab = (e: React.KeyboardEvent) => {
+    if (e.key !== "Tab" || !boxRef.current) return;
+    const f = [...boxRef.current.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )];
+    if (f.length === 0) return;
+    const [a, z] = [f[0], f[f.length - 1]];
+    if (e.shiftKey && document.activeElement === a) {
+      e.preventDefault();
+      z.focus();
+    } else if (!e.shiftKey && document.activeElement === z) {
+      e.preventDefault();
+      a.focus();
+    }
+  };
   if (!open) return null;
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
-      <div className="modal" style={{ width }} onMouseDown={(e) => e.stopPropagation()} role="dialog" aria-modal>
+      <div
+        ref={boxRef}
+        tabIndex={-1}
+        className="modal"
+        style={{ width }}
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={trapTab}
+        role="dialog"
+        aria-modal
+        aria-label={title}
+      >
         {title && (
           <div className="modal-head">
             <h2>{title}</h2>
@@ -221,7 +257,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={show}>
       {children}
-      {toast && <div className={`toast ${toast.kind === "error" ? "toast-error" : ""}`}>{toast.msg}</div>}
+      <div className="sr-only" role="status" aria-live="polite">
+        {toast?.msg ?? ""}
+      </div>
+      {toast && (
+        <div className={`toast ${toast.kind === "error" ? "toast-error" : ""}`} aria-hidden>
+          {toast.msg}
+        </div>
+      )}
     </ToastContext.Provider>
   );
 }

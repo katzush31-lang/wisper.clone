@@ -13,6 +13,7 @@
 - **UI (`src`)**: home + history detail, insights, dictionary (+suggestions, CSV import), snippets (+JSON import), style (modes, custom modes, per-app styles), transforms, scratchpad, full settings, floating bar.
 
 | 2026-11-23 | Accounts (optional) | Google Sign-In, encrypted cloud API keys (per-computer choice), sync of settings/dictionary/snippets/word counts via a Cloudflare Worker + D1 (`cloud/`). Design: `docs/ACCOUNTS.md`. Independent security review: 4 rounds, signed off. |
+| 2026-11-23 | UI redesign | Own look instead of a Flow copy: graphite + spruce-green, dark header band with page tabs and Ctrl+K Jump-to (no sidebar), Settings as a full page with section tabs, new Home (shortcut shown as keys in one wide strip, history as one list with app column, always-visible search, one-click copy). Floating bar re-shaped and re-coloured. Accessibility: focus moves into and back out of dialogs, screen-reader announcements for messages, AA contrast, reduced motion. |
 
 ## Decisions made during review
 - Spoken mode switch needs a pause/punctuation after the phrase ("As an email, …") or the word "mode/style/format" with a lead-in ("In list mode …"), so ordinary sentences are never cut.

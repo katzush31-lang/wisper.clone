@@ -1,35 +1,191 @@
-.home-top {
+/* One wide strip: your shortcut as keys | tips | your numbers. */
+.talk-warn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px 10px 16px;
+  margin-bottom: 14px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--warning) 14%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+  font-weight: 500;
+}
+.talk-warn svg {
+  color: var(--warning);
+  flex-shrink: 0;
+}
+.talk-warn span {
+  flex: 1;
+}
+.talk {
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(220px, 1fr);
-  gap: 16px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "how tips stats" "steps steps steps";
+  align-items: center;
+  gap: 0 30px;
+  padding: 20px 24px;
   margin-bottom: 34px;
+  border-radius: var(--radius-lg);
+  background: var(--accent-soft);
+  border-left: 6px solid var(--accent);
 }
-.home-hero {
-  min-height: 190px;
+.talk-how {
+  grid-area: how;
 }
-.home-explain {
-  margin: 18px 0 0;
-  padding-left: 20px;
+.talk-title {
+  margin: 0 0 10px;
   font-size: 13.5px;
-  line-height: 1.6;
-  opacity: 0.95;
+  font-weight: 600;
+  color: var(--accent-strong);
 }
-.home-stats {
+.talk-keys {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.talk-keywrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.talk-plus {
+  font-size: 18px;
+  color: var(--text-muted);
+}
+kbd.talk-key {
+  min-width: 58px;
+  height: 50px;
+  padding: 0 16px;
+  font-size: 19px;
+  font-weight: 650;
+  border-radius: 9px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-bottom: 4px solid var(--accent);
+}
+.talk-tips {
+  grid-area: tips;
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 30px;
+  border-left: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
+  gap: 6px;
+  line-height: 1.45;
+}
+.talk-stats {
+  grid-area: stats;
+  display: flex;
   gap: 8px;
-  padding: 18px 24px;
+  margin: 0;
 }
 .home-stat {
   display: flex;
-  align-items: baseline;
-  gap: 12px;
+  flex-direction: column-reverse;
+  align-items: flex-start;
+  min-width: 92px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--panel);
+}
+.home-stat dt {
+  font-size: 12.5px;
 }
 .home-stat-num {
-  font-size: 38px;
-  line-height: 1.1;
-  min-width: 90px;
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.2;
+}
+.talk-steps {
+  grid-area: steps;
+  margin: 18px 0 0;
+  padding: 12px 16px 12px 34px;
+  background: var(--panel);
+  border-radius: var(--radius-sm);
+  line-height: 1.7;
+}
+@media (max-width: 1040px) {
+  .talk {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas: "how tips" "stats stats" "steps steps";
+  }
+  .talk-stats {
+    margin-top: 16px;
+  }
+  .home-stat {
+    flex: 1;
+  }
+}
+
+/* History: one continuous list, day names as divider rows, columns for time / text / app. */
+.hist {
+  border-top: 2px solid var(--text);
+}
+.hist-day {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 10px 0 8px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  font-weight: 700;
+}
+.hist-row {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+}
+.hist-row:hover {
+  background: var(--row-hover);
+}
+.hist-open {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr) 120px;
+  align-items: baseline;
+  gap: 16px;
+  padding: 13px 4px 13px 0;
+  border: none;
+  background: transparent;
+  text-align: left;
+}
+.hist-time {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  padding-left: 4px;
+}
+.hist-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+.hist-app {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hist-copy,
+.hist-copy-space {
+  width: 32px;
+  margin: 0 4px 0 8px;
+  flex-shrink: 0;
+}
+.hist-copy {
+  opacity: 0;
+}
+.hist-row:hover .hist-copy,
+.hist-copy:focus-visible {
+  opacity: 1;
 }
 .home-hist-head {
   display: flex;
@@ -39,41 +195,10 @@
   min-height: 36px;
 }
 .home-hist-head .search-box {
-  width: 280px;
+  width: 260px;
 }
-.home-day {
-  margin-top: 14px;
-}
-.home-day-label {
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  margin: 0 0 8px 2px;
-}
-.home-row {
-  width: 100%;
-  text-align: left;
-  background: transparent;
-  border-left: none;
-  border-right: none;
-  border-bottom: none;
-  padding: 14px 20px;
-  align-items: baseline;
-}
-.home-time {
-  width: 64px;
-  flex-shrink: 0;
-  font-size: 13px;
-}
-.home-text {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  align-items: flex-start;
+.home-hist-head .section-label {
+  margin: 0;
 }
 .home-snippet {
   display: -webkit-box;
@@ -173,11 +298,6 @@
 .hd-select {
   width: 200px;
   padding: 5px 10px;
-}
-@media (max-width: 760px) {
-  .home-top {
-    grid-template-columns: 1fr;
-  }
 }
 
 .home-search {
