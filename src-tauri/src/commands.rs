@@ -218,6 +218,42 @@ pub async fn retry_history_item(app: AppHandle, id: String) -> Res<Option<Proces
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryWaitingResult {
+    done: usize,
+    still_waiting: usize,
+}
+
+/// "Try all again" on the waiting-recordings row: every queued or failed recording, oldest
+/// first. Stops early when the internet is still down.
+#[tauri::command]
+pub async fn retry_waiting(app: AppHandle) -> Res<RetryWaitingResult> {
+    use wisper_core::providers::ErrorKind;
+    use wisper_core::pipeline::PipelineError;
+    let c = ctl(&app);
+    let mut ids = Vec::new();
+    for status in ["queued", "failed"] {
+        let q = HistoryQuery { status: Some(status.into()), limit: Some(500), ..Default::default() };
+        ids.extend(c.engine.db.list(&q).map_err(dberr)?);
+    }
+    ids.sort_by_key(|i| i.created_at);
+    let total = ids.len();
+    let mut done = 0;
+    for it in ids {
+        let r = c.engine.retry_dictation(&it.id, None).await;
+        let offline = matches!(&r, Err(PipelineError::Queued { kind, .. }) if matches!(kind, ErrorKind::Network | ErrorKind::Timeout));
+        if matches!(r, Ok(_)) {
+            done += 1;
+        }
+        if offline {
+            break;
+        }
+    }
+    let _ = app.emit("history-changed", "");
+    Ok(RetryWaitingResult { done, still_waiting: total - done })
+}
+
 #[tauri::command]
 pub fn copy_text(text: String) -> Res<()> {
     platform::set_clipboard_text(&text)
@@ -384,6 +420,22 @@ pub fn import_snippets_json(app: AppHandle, text: String) -> Res<ImportResult> {
 #[tauri::command]
 pub fn list_modes(app: AppHandle) -> Vec<Mode> {
     ctl(&app).engine.modes()
+}
+
+/// "AI instructions" page: the real blocks the cleanup AI is sent, built with the same
+/// functions the pipeline uses.
+#[tauri::command]
+pub fn prompt_preview(
+    app: AppHandle,
+    mode_id: String,
+    app_category: Option<wisper_core::apps::AppCategory>,
+    cleanup_level: Option<wisper_core::prompts::CleanupLevel>,
+) -> Res<wisper_core::prompt_preview::PromptPreview> {
+    use wisper_core::prompt_preview::{build, sample_for, PreviewRequest};
+    let c = ctl(&app);
+    let entries = c.engine.db.dict_all().map_err(dberr)?;
+    let req = PreviewRequest { mode_id, app_category, cleanup_level };
+    build(&c.engine.settings(), &c.engine.modes(), &entries, &req, &sample_for(app_category)).ok_or_else(|| "That mode no longer exists.".to_string())
 }
 
 #[tauri::command]

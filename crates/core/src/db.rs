@@ -93,6 +93,9 @@ pub struct HistoryQuery {
     pub from: Option<i64>,
     pub to: Option<i64>,
     pub status: Option<String>,
+    /// Leave out items with any of these statuses.
+    #[serde(default)]
+    pub exclude_status: Option<Vec<String>>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -759,6 +762,12 @@ impl Db {
             sql.push_str(" AND status = ?");
             args.push(Box::new(s.clone()));
         }
+        if let Some(list) = q.exclude_status.as_ref().filter(|l| !l.is_empty()) {
+            sql.push_str(&format!(" AND status NOT IN ({})", vec!["?"; list.len()].join(",")));
+            for st in list {
+                args.push(Box::new(st.clone()));
+            }
+        }
         sql.push_str(" ORDER BY created_at DESC LIMIT ? OFFSET ?");
         args.push(Box::new(q.limit.unwrap_or(100).clamp(1, 1000)));
         args.push(Box::new(q.offset.unwrap_or(0).max(0)));
@@ -806,6 +815,18 @@ impl Db {
         conn.execute("DELETE FROM segments WHERE dictation_id=?1", [id])?;
         conn.execute("DELETE FROM dictations WHERE id=?1", [id])?;
         Ok(path)
+    }
+
+    /// Old "No speech" rows where the speech detector never found speech in any piece:
+    /// they hold nothing, so they can go. (Rows where it did hear speech stay.)
+    pub fn silent_empty_items(&self) -> DbResult<Vec<String>> {
+        let conn = self.c();
+        let mut stmt = conn.prepare(
+            "SELECT id FROM dictations d WHERE status='empty' AND (raw_text IS NULL OR TRIM(raw_text)='') \
+             AND NOT EXISTS (SELECT 1 FROM segments s WHERE s.dictation_id=d.id AND s.has_speech=1)",
+        )?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        rows.collect()
     }
 
     /// Audio files older than the cutoff (only for finished dictations).

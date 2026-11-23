@@ -54,3 +54,23 @@ export function whoLabel(status: Pick<AccountStatus, "name" | "email">): string 
 export function shouldOfferSignIn(status: Pick<AccountStatus, "available" | "signedIn"> | null | undefined, dismissed: boolean): boolean {
   return accountState(status) === "signed-out" && !dismissed;
 }
+
+/** Why this computer still asks where to keep keys (sent by the app only while not chosen). */
+export type KeyChoice = "own_only" | "differ";
+export type AccountStatusWithChoice = AccountStatus & { keyChoice?: KeyChoice };
+
+/** The segmented "where to keep keys" control is only shown once the choice is made, so clicking an option always does something. */
+export function showKeyStorageControl(status: Pick<AccountStatus, "keyStorageChosen">): boolean {
+  return status.keyStorageChosen !== false;
+}
+
+/** The card's explanation, saying which keys would be used (the account's, or this computer's). */
+export function keyChoiceText(status: { keyChoice?: KeyChoice }): string {
+  if (status.keyChoice === "differ") {
+    return "Your account already has API keys, and they are different from the ones on this computer. If you choose your account, the account's keys will be used here and this computer's own keys are kept as a backup. If you choose this computer only, nothing changes in your account.";
+  }
+  if (status.keyChoice === "own_only") {
+    return "This computer has API keys and your account has none yet. If you choose your account, this computer's keys are uploaded (encrypted) so your other computers can use them. If you choose this computer only, they never leave it.";
+  }
+  return "Nothing moves until you choose, and you can change it later. This choice is just for this computer.";
+}

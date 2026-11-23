@@ -465,6 +465,9 @@ async fn s04_cloud_api_keys_sync_and_removal_reach_the_other_computer() {
     a.sync().await;
 
     let mut b = Computer::start(&base, 4, 'b').await;
+    // B has no keys and the account has some: B picks "Your account (synced)" by itself at sign-in.
+    assert_eq!(b.engine.key_storage(), Some(KeyStorage::Cloud));
+    assert_eq!(b.keys.get("anthropic").as_deref(), Some(KEY_ANTHROPIC));
     b.choose(KeyStorage::Cloud).await;
     assert_eq!(b.keys.get("anthropic").as_deref(), Some(KEY_ANTHROPIC));
     assert_eq!(b.keys.get("openai").as_deref(), Some(KEY_OPENAI));

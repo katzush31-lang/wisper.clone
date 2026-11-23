@@ -66,21 +66,25 @@ pub fn base_system_block(dictionary_listing: &str) -> String {
     s
 }
 
-/// Second system block: the chosen mode and how much to edit.
-pub fn mode_block(mode: &Mode, level: CleanupLevel) -> String {
-    let level_text = match level {
+/// The "how much to edit" sentence for a cleanup level.
+pub fn level_text(level: CleanupLevel) -> &'static str {
+    match level {
         CleanupLevel::Light | CleanupLevel::None => {
             "Edit lightly: fix the speech issues above, but keep the speaker's sentences and word choices as they are wherever they read fine."
         }
         CleanupLevel::Medium => {
             "You may also reword sentences for clarity and concision and reorder for readability, still keeping every point, fact and the speaker's voice."
         }
-    };
+    }
+}
+
+/// Second system block: the chosen mode and how much to edit.
+pub fn mode_block(mode: &Mode, level: CleanupLevel) -> String {
     format!(
         "## Format for this dictation: {}\n{}\n\n## How much to edit\n{}",
         mode.name,
         mode.instructions.trim(),
-        level_text
+        level_text(level)
     )
 }
 

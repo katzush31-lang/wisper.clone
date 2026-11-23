@@ -424,12 +424,13 @@ async fn local_key_storage_never_uploads() {
     // Before choosing, nothing is uploaded.
     assert!(fake.server_keys().is_empty());
     a.choose(KeyStorage::Local).await;
+    let gets_before = fake.calls("GET /v1/keys"); // the sign-in sync looked once (to decide)
     a.set_key("openai", KEY_B).await;
     a.sync().await;
     a.sync().await;
     assert!(fake.server_keys().is_empty());
     assert_eq!(fake.calls("PUT /v1/keys/openai") + fake.calls("PUT /v1/keys/anthropic"), 0);
-    assert_eq!(fake.calls("GET /v1/keys"), 0, "local storage doesn't even download keys");
+    assert_eq!(fake.calls("GET /v1/keys"), gets_before, "local storage doesn't even download keys");
     assert_eq!(a.keys.get("anthropic").as_deref(), Some(KEY_A));
 }
 
@@ -462,10 +463,12 @@ async fn first_choice_never_wipes_keys_uploaded_by_another_computer() {
     a.sign_in("u1").await;
     a.choose(KeyStorage::Cloud).await;
     a.set_key("anthropic", KEY_A).await;
+    b.keys.set("anthropic", "sk-ant-own-on-b-dddddddddddddd"); // different keys: B is asked, not auto-chosen
     b.sign_in("u1").await; // takes the account's "cloud" setting
+    assert!(!b.engine.key_storage_chosen());
     b.choose(KeyStorage::Local).await; // first choice on B: only this computer is affected
     assert_eq!(fake.server_keys().get("anthropic").map(String::as_str), Some(KEY_A));
-    assert!(b.keys.get("anthropic").is_none());
+    assert_eq!(b.keys.get("anthropic").as_deref(), Some("sk-ant-own-on-b-dddddddddddddd"));
 }
 
 #[tokio::test]
@@ -1014,7 +1017,7 @@ async fn second_computer_with_no_keys_gets_the_accounts_keys_at_sign_in_without_
     assert_eq!(b.keys.get("anthropic").as_deref(), Some(KEY_A));
     assert_eq!(b.keys.get("openai").as_deref(), Some(KEY_B));
     assert!(r.keys_changed && r.auto_chose_cloud && !r.switched_to_local);
-    assert_eq!(r.notice.as_deref(), Some(KEYS_AUTO_SYNCED_NOTICE));
+    assert_eq!(r.notice.as_deref(), Some(sync::KEYS_AUTO_SYNCED_NOTICE));
     assert!(b.engine.key_storage_chosen());
     assert_eq!(b.engine.key_storage(), Some(KeyStorage::Cloud));
     assert_eq!(b.engine.key_choice_situation(), None);

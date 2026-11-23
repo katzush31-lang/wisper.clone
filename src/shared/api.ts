@@ -34,6 +34,24 @@ export interface Mode {
   aliases: string[];
 }
 
+export type AppCategory = "email" | "workChat" | "personalChat" | "aiAssistant" | "document" | "code" | "other";
+
+export interface PromptPreview {
+  modeId: string;
+  modeName: string;
+  /** false when cleanup is set to "no AI edits": none of this is sent */
+  aiUsed: boolean;
+  level: CleanupLevel;
+  levelText: string;
+  baseSystem: string;
+  modeSystem: string;
+  userMessage: string;
+  appTypes: { category: AppCategory; label: string; sentence: string; autoModeId: string; autoModeName: string }[];
+  commandSystem: string;
+  commandUser: string;
+  transforms: { name: string; instructions: string; userMessage: string }[];
+}
+
 export interface AppStyle {
   appKey: string;
   appName: string;
@@ -194,6 +212,8 @@ export interface HistoryQuery {
   from?: number;
   to?: number;
   status?: HistoryStatus;
+  /** leave out items with any of these statuses */
+  excludeStatus?: HistoryStatus[];
   limit?: number;
   offset?: number;
 }
@@ -347,6 +367,8 @@ export const api = {
   reprocessHistoryItem: (id: string, modeId: string) =>
     call<Processed>("reprocess_history_item", { id, modeId }),
   retryHistoryItem: (id: string) => call<Processed | null>("retry_history_item", { id }),
+  /** Tries every waiting (queued or failed) recording again, one after another. */
+  retryWaiting: () => call<{ done: number; stillWaiting: number }>("retry_waiting"),
   copyText: (text: string) => call<void>("copy_text", { text }),
 
   listDictionary: () => call<DictEntry[]>("list_dictionary"),
@@ -365,6 +387,8 @@ export const api = {
   importSnippetsJson: (text: string) => call<ImportResult>("import_snippets_json", { text }),
 
   listModes: () => call<Mode[]>("list_modes"),
+  promptPreview: (modeId: string, appCategory?: AppCategory | null, cleanupLevel?: CleanupLevel | null) =>
+    call<PromptPreview>("prompt_preview", { modeId, appCategory: appCategory ?? null, cleanupLevel: cleanupLevel ?? null }),
   defaultModeInstructions: (id: string) => call<string | null>("default_mode_instructions", { id }),
 
   getStats: () => call<Stats>("get_stats"),

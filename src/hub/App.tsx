@@ -99,6 +99,10 @@ export default function App() {
           open={settingsOpen !== null}
           initialSection={settingsOpen ?? undefined}
           onClose={() => setSettingsOpen(null)}
+          onNavigate={(p) => {
+            setSettingsOpen(null);
+            setPage(p);
+          }}
         />
       </div>
       </ToastProvider>

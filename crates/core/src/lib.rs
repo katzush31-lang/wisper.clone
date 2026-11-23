@@ -11,6 +11,7 @@ pub mod hotkey;
 pub mod live;
 pub mod modes;
 pub mod pipeline;
+pub mod prompt_preview;
 pub mod prompts;
 pub mod quick;
 pub mod providers;

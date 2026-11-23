@@ -3,10 +3,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, compactNumber, comboLabel, events, type HistoryItem, type Stats } from "../../shared/api";
 import { shouldOfferSignIn } from "../../shared/account";
 import { useAccountStatus } from "../useAccount";
-import { EmptyState, SearchBox, dayLabel, timeLabel } from "../components";
+import { EmptyState, SearchBox, dayLabel } from "../components";
 import { useSettings } from "../useSettings";
 import HistoryDetail from "./home/HistoryDetail";
-import { itemText, statusInfo } from "./home/helpers";
+import HistoryRow from "./home/HistoryRow";
+import WaitingRow from "./home/WaitingRow";
+import { keysMissing as needKeys, type KeyState } from "./home/helpers";
 import "./home.css";
 
 const PAGE = 50;
@@ -25,7 +27,8 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
   const { status: account } = useAccountStatus();
   const [cardDismissed, setCardDismissed] = useState(readDismissed);
   const [stats, setStats] = useState<Stats | null>(null);
-  const [keysMissing, setKeysMissing] = useState(false);
+  const [keys, setKeys] = useState<KeyState | null>(null);
+  const [waiting, setWaiting] = useState<HistoryItem[]>([]);
   const [explain, setExplain] = useState(false);
   const [items, setItems] = useState<HistoryItem[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -52,31 +55,50 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
       const from = new Date(y, m - 1, d).getTime();
       range = { from, to: from + 86_400_000 - 1 };
     }
+    // Without a search or a day filter, recordings still waiting to be processed are shown
+    // as one row at the top instead of one row each.
+    const grouped = !text && !day;
     api
-      .listHistory({ limit: limit + 1, ...(text ? { text } : {}), ...range })
+      .listHistory({ limit: limit + 1, ...(text ? { text } : {}), ...range, ...(grouped ? { excludeStatus: ["queued", "failed"] } : {}) })
       .then((rows) => {
         setHasMore(rows.length > limit);
         setItems(rows.slice(0, limit));
       })
       .catch(() => {})
       .finally(() => setLoaded(true));
+    if (grouped) {
+      Promise.all([api.listHistory({ status: "queued", limit: 500 }), api.listHistory({ status: "failed", limit: 500 })])
+        .then(([a, b]) => setWaiting([...a, ...b].sort((x, y) => y.createdAt - x.createdAt)))
+        .catch(() => {});
+    } else {
+      setWaiting([]);
+    }
+  }, []);
+
+  const loadKeys = useCallback(() => {
+    api
+      .keyStatus()
+      .then(setKeys)
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
     loadStats();
     loadItems();
-    api
-      .keyStatus()
-      .then((k) => setKeysMissing(!k.openai || !k.anthropic))
-      .catch(() => {});
-    const un = events.historyChanged(() => {
-      loadStats();
-      loadItems();
-    });
+    loadKeys();
+    const unsubs = [
+      events.historyChanged(() => {
+        loadStats();
+        loadItems();
+      }),
+      // Keys saved or removed in Settings, or a different AI chosen: re-check what is missing.
+      events.keysChanged(loadKeys),
+      events.settingsChanged(loadKeys),
+    ];
     return () => {
-      un.then((f) => f()).catch(() => {});
+      unsubs.forEach((u) => u.then((f) => f()).catch(() => {}));
     };
-  }, [loadStats, loadItems]);
+  }, [loadStats, loadItems, loadKeys]);
 
   useEffect(() => {
     queryRef.current = query;
@@ -96,10 +118,11 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
     return out;
   }, [items]);
 
-  const opened = items.find((i) => i.id === openId) ?? null;
+  const opened = items.find((i) => i.id === openId) ?? waiting.find((i) => i.id === openId) ?? null;
   const name = settings?.userName?.trim();
   const shortcut = settings ? comboLabel(settings.hotkeys.dictate[0]) : "your shortcut";
-  const noHistory = loaded && items.length === 0 && !query.trim();
+  const keysMissing = needKeys(keys, settings?.providers.cleanupProvider);
+  const noHistory = loaded && items.length === 0 && waiting.length === 0 && !query.trim() && !date;
 
   return (
     <div className="page page-narrow">
@@ -194,6 +217,8 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
         )}
       </div>
 
+      <WaitingRow items={waiting} keys={keys} onOpen={setOpenId} onChanged={loadItems} />
+
       {noHistory ? (
         <div className="card">
           <EmptyState icon={<Mic size={28} />} title="Nothing here yet">
@@ -201,31 +226,16 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
             kept here.
           </EmptyState>
         </div>
-      ) : loaded && items.length === 0 ? (
-        <div className="card empty">Nothing matches "{query}".</div>
+      ) : loaded && items.length === 0 && waiting.length === 0 && (query.trim() || date) ? (
+        <div className="card empty">Nothing matches{query.trim() ? ` "${query}"` : " that day"}.</div>
       ) : (
         groups.map((g) => (
           <section key={g.label} className="home-day">
             <div className="home-day-label">{g.label}</div>
             <div className="list">
-              {g.items.map((it) => {
-                const st = statusInfo(it);
-                const text = itemText(it);
-                return (
-                  <button key={it.id} className="list-row home-row" onClick={() => setOpenId(it.id)}>
-                    <span className="home-time muted">{timeLabel(it.createdAt)}</span>
-                    <span className="home-text">
-                      {text ? <span className="home-snippet">{text}</span> : null}
-                      {st && (
-                        <span className={`home-chip ${st.tone}`}>
-                          {st.label}
-                          {!text && <span className="home-chip-reason"> · {st.reason}</span>}
-                        </span>
-                      )}
-                    </span>
-                  </button>
-                );
-              })}
+              {g.items.map((it) => (
+                <HistoryRow key={it.id} item={it} onOpen={() => setOpenId(it.id)} />
+              ))}
             </div>
           </section>
         ))

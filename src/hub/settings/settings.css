@@ -304,3 +304,88 @@
 .account-choose p { margin: 0; }
 .account-choose-btns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
 .account-choose-note { font-size: 12.5px; }
+
+/* AI instructions (read-only prompt viewer) */
+.prompt-intro {
+  margin: 0 0 14px;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.prompt-note {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.prompt-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.prompt-block-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.prompt-block-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+.prompt-block-desc {
+  font-size: 13px;
+  line-height: 1.45;
+  margin-top: 2px;
+}
+.prompt-pre {
+  margin: 0;
+  padding: 12px 14px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  user-select: text;
+}
+.prompt-pre.tall {
+  max-height: 340px;
+}
+.prompt-pre:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.prompt-copy-all {
+  align-self: flex-start;
+}
+.prompt-table {
+  display: flex;
+  flex-direction: column;
+}
+.prompt-table-row {
+  display: flex;
+  gap: 16px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+.prompt-table-row:first-child {
+  border-top: none;
+}
+.prompt-table-label {
+  width: 210px;
+  flex-shrink: 0;
+  font-weight: 600;
+}
+.prompt-table-text code {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}

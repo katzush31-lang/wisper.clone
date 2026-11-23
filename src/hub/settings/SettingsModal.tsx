@@ -1,4 +1,4 @@
-import { Bell, Cloud, Database, Info, Keyboard, KeyRound, Mic, Settings as Cog, Volume2, X } from "lucide-react";
+import { Bell, Cloud, Database, Info, Keyboard, KeyRound, Mic, ScrollText, Settings as Cog, Volume2, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useSettings } from "../useSettings";
 import GeneralSection from "./GeneralSection";
@@ -7,12 +7,15 @@ import { AudioSection, DictationSection, NotificationsSection } from "./Dictatio
 import ProvidersSection from "./ProvidersSection";
 import { AboutSection, DataSection } from "./DataSections";
 import AccountSection from "./AccountSection";
+import PromptsSection from "./PromptsSection";
 import "./settings.css";
 
 interface Props {
   open: boolean;
   initialSection?: string;
   onClose: () => void;
+  /** Leaves Settings and opens a page of the main window. */
+  onNavigate?: (page: "style") => void;
 }
 
 const SECTIONS: { id: string; label: string; icon: ReactNode }[] = [
@@ -22,6 +25,7 @@ const SECTIONS: { id: string; label: string; icon: ReactNode }[] = [
   { id: "audio", label: "Sounds & audio", icon: <Volume2 size={16} /> },
   { id: "notifications", label: "Notifications", icon: <Bell size={16} /> },
   { id: "providers", label: "AI providers", icon: <KeyRound size={16} /> },
+  { id: "prompts", label: "AI instructions", icon: <ScrollText size={16} /> },
   { id: "data", label: "Data & privacy", icon: <Database size={16} /> },
   { id: "account", label: "Account", icon: <Cloud size={16} /> },
   { id: "about", label: "About & updates", icon: <Info size={16} /> },
@@ -29,7 +33,7 @@ const SECTIONS: { id: string; label: string; icon: ReactNode }[] = [
 
 const validId = (id?: string) => (SECTIONS.some((s) => s.id === id) ? (id as string) : "general");
 
-export default function SettingsModal({ open, initialSection, onClose }: Props) {
+export default function SettingsModal({ open, initialSection, onClose, onNavigate }: Props) {
   const { settings, update } = useSettings();
   const [section, setSection] = useState(validId(initialSection));
   const [childBusy, setChildBusy] = useState(false);
@@ -80,6 +84,9 @@ export default function SettingsModal({ open, initialSection, onClose }: Props) 
         break;
       case "providers":
         body = <ProvidersSection {...p} />;
+        break;
+      case "prompts":
+        body = <PromptsSection {...p} onNavigate={onNavigate} />;
         break;
       case "data":
         body = <DataSection {...p} />;

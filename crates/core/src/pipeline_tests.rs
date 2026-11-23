@@ -219,7 +219,11 @@ async fn silence_is_not_sent_anywhere() {
     let out = h.engine.process(rec, &no_progress()).await.unwrap();
     assert!(matches!(out, Outcome::NoSpeech { .. }));
     assert!(h.stt.requests.lock().unwrap().is_empty());
-    assert_eq!(h.engine.db.get(&id).unwrap().unwrap().status, "empty");
+    // Nothing was heard: the row and the audio are gone straight away.
+    assert!(h.engine.db.get(&id).unwrap().is_none());
+    assert!(h.engine.db.segments(&id).unwrap().is_empty());
+    assert!(!h.engine.recordings_dir().join(format!("{id}.pcm")).exists());
+    assert!(!h.engine.recordings_dir().join(format!("{id}.flac")).exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -381,6 +385,14 @@ async fn cancel_keeps_real_recordings_and_drops_taps() {
     }
     s.cancel();
     assert_eq!(h.engine.db.get(&id).unwrap().unwrap().status, "cancelled");
+    // A long cancelled recording with no speech in it is dropped too.
+    let mut s = h.engine.start_session(RecordingKind::Dictation, ctx("notepad.exe", ""), 48_000, 2, tokio::runtime::Handle::current()).unwrap();
+    let quiet_id = s.id.clone();
+    for chunk in audio48(&[(false, 2000)]).chunks(960) {
+        s.push(chunk);
+    }
+    s.cancel();
+    assert!(h.engine.db.get(&quiet_id).unwrap().is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -462,11 +474,15 @@ fn cleanup_guard_catches_answers() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn silent_judged_recording_can_be_transcribed_anyway() {
+async fn empty_transcript_with_speech_is_kept_and_can_be_transcribed_anyway() {
     let h = harness();
-    let rec = record(&h, ctx("notepad.exe", ""), &[(false, 2000)]);
+    // The speech detector heard speech, but the recogniser returned nothing (very quiet speech):
+    // that is not "no speech", so it stays in History and can be retried.
+    h.stt.script.lock().unwrap().push_back(Ok(String::new()));
+    let rec = record(&h, ctx("notepad.exe", ""), &[(false, 300), (true, 2000), (false, 400)]);
     let id = rec.id.clone();
     assert!(matches!(h.engine.process(rec, &no_progress()).await.unwrap(), Outcome::NoSpeech { .. }));
+    assert_eq!(h.engine.db.get(&id).unwrap().unwrap().status, "empty");
     // Wait for the background archive to finish.
     for _ in 0..50 {
         if h.engine.db.get(&id).unwrap().unwrap().audio_path.unwrap().ends_with(".flac") {
@@ -478,6 +494,70 @@ async fn silent_judged_recording_can_be_transcribed_anyway() {
     let r = h.engine.retry_dictation_with(&id, None, true).await.unwrap();
     let Outcome::Text(p) = r else { panic!("{r:?}") };
     assert_eq!(p.final_text, "Very quiet words.");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn old_silent_rows_are_purged_but_ones_with_speech_stay() {
+    let h = harness();
+    let mk = |id: &str, status: &str| {
+        let item = HistoryItem { id: id.into(), created_at: 1, kind: "dictation".into(), status: status.into(), ..Default::default() };
+        h.engine.db.insert_dictation(&item).unwrap();
+    };
+    mk("silent", "empty");
+    mk("heard", "empty");
+    mk("failed", "failed");
+    let seg = |id: &str, speech: bool| SegmentRow { dictation_id: id.into(), idx: 0, start_sample: 0, end_sample: 10, has_speech: speech, status: "skipped".into(), text: None, error: None };
+    h.engine.db.upsert_segment(&seg("silent", false)).unwrap();
+    h.engine.db.upsert_segment(&seg("heard", true)).unwrap();
+    assert_eq!(h.engine.purge_silent_items(), 1);
+    assert!(h.engine.db.get("silent").unwrap().is_none());
+    assert!(h.engine.db.get("heard").unwrap().is_some());
+    assert!(h.engine.db.get("failed").unwrap().is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_recordings_with_speech_are_kept() {
+    let h = harness();
+    let err = ProviderError::new(ErrorKind::Auth, "OpenAI", "no key");
+    for _ in 0..4 {
+        h.stt.script.lock().unwrap().push_back(Err(err.clone()));
+    }
+    let rec = record(&h, ctx("notepad.exe", ""), &[(true, 2000), (false, 300)]);
+    let id = rec.id.clone();
+    assert!(h.engine.process(rec, &no_progress()).await.is_err());
+    let item = h.engine.db.get(&id).unwrap().unwrap();
+    assert_eq!(item.status, "failed");
+    assert!(item.audio_path.is_some());
+    // The history list can leave waiting items out (the UI shows them as one row).
+    let shown = h.engine.db.list(&crate::db::HistoryQuery { exclude_status: Some(vec!["failed".into(), "queued".into()]), ..Default::default() }).unwrap();
+    assert!(shown.iter().all(|i| i.id != id));
+    let waiting = h.engine.db.list(&crate::db::HistoryQuery { status: Some("failed".into()), ..Default::default() }).unwrap();
+    assert_eq!(waiting.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn prompt_preview_equals_what_cleanup_sends() {
+    use crate::prompt_preview::{build, sample_for, PreviewRequest};
+    let h = harness();
+    let mut st = h.engine.settings();
+    st.providers.fast_cleanup.skip_ai_for_tiny = false;
+    h.engine.set_settings(st);
+    for (mode, cat) in [("email", Some(apps::AppCategory::Email)), ("casual", Some(apps::AppCategory::PersonalChat)), ("auto", None)] {
+        h.llm.requests.lock().unwrap().clear();
+        let sample = sample_for(cat);
+        // Same text the preview shows, after the (here no-op) dictionary pass.
+        let r = h.engine.clean_text_for(&sample.transcript, &sample.ctx, Some(mode), None).await;
+        assert!(r.error.is_none());
+        let sent = h.llm.requests.lock().unwrap()[0].clone();
+        let st = h.engine.settings();
+        let entries = h.engine.db.dict_all().unwrap();
+        let req = PreviewRequest { mode_id: mode.into(), app_category: cat, cleanup_level: None };
+        let p = build(&st, &h.engine.modes(), &entries, &req, &sample).unwrap();
+        assert_eq!(sent.system[0].text, p.base_system, "{mode}");
+        assert_eq!(sent.system[1].text, p.mode_system, "{mode}");
+        assert_eq!(sent.user, p.user_message, "{mode}");
+        assert!(sent.system[0].text.contains("zechus (may come through as: Zeus"));
+    }
 }
 
 // ---------------------------------------------------------------- fast model for short dictations

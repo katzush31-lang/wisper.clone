@@ -620,9 +620,8 @@ impl Controller {
             // Paste first, then free Wisper, so a new dictation can't start mid-paste.
             Ok(Outcome::Text(p)) => self.insert_result(p, target, &app, hwnd, kind),
             Ok(Outcome::NoSpeech { .. }) => {
-                let mut st = self.bar("notice").msg("Didn't catch anything").detail("No speech was detected. If you did speak, open it in History and choose Try again.");
-                st.actions = vec!["history"];
-                self.show_bar(st, Some(Duration::from_secs(4)));
+                // Recordings with no speech are not kept, so there is nothing to open in History.
+                self.show_bar(self.bar("notice").msg("Didn't catch anything").detail("No speech was detected. Check that the right microphone is selected in Settings."), Some(Duration::from_secs(4)));
             }
             Err(e) => self.report_error(&e),
         }
@@ -1107,6 +1106,10 @@ impl Controller {
         });
         let me = self.clone();
         std::thread::spawn(move || loop {
+            // "No speech" rows from older versions hold nothing; tidy them away.
+            if me.engine.purge_silent_items() > 0 {
+                let _ = me.app.emit("history-changed", "");
+            }
             let (a, h) = me.engine.apply_retention();
             if a + h > 0 {
                 tracing::info!("retention removed {a} audio files and {h} history items");

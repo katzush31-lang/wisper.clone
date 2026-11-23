@@ -109,6 +109,10 @@ pub struct AccountStatus {
     key_storage: &'static str,
     /// False until the user has picked where keys live after signing in (keys aren't synced before).
     key_storage_chosen: bool,
+    /// While not chosen and a question is needed: "own_only" (this computer's keys would be
+    /// uploaded) or "differ" (the account's different keys would be used here).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key_choice: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_sync: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -227,6 +231,7 @@ impl Account {
             // Per computer: the engine's choice once made, else whatever the settings mirror says.
             key_storage: self.engine.as_ref().and_then(|e| e.key_storage()).unwrap_or(settings.account.key_storage).as_str(),
             key_storage_chosen: self.engine.as_ref().map(|e| e.key_storage_chosen()).unwrap_or(false),
+            key_choice: self.engine.as_ref().and_then(|e| e.key_choice_situation()),
             last_sync: self.engine.as_ref().and_then(|e| e.last_sync()),
             sync_error: self.last_error.lock().clone(),
             notice: self.notice.lock().clone(),
@@ -276,6 +281,15 @@ impl Account {
         match engine.sync(&settings).await {
             Ok(report) => {
                 *self.last_error.lock() = None;
+                // Keys already changed on this computer (and are in use by dictation): tell the
+                // Providers page, Home and the key status straight away, without waiting for idle.
+                if report.keys_changed || report.auto_chose_cloud {
+                    let c = ControllerState::get(&self.app);
+                    if c.engine.requeue_auth_failures() > 0 {
+                        let _ = self.app.emit("history-changed", "");
+                    }
+                    let _ = self.app.emit("keys-changed", "");
+                }
                 // Never change settings in the middle of a recording or while a dictation is
                 // processing: wait until Wisper is idle.
                 let c = ControllerState::get(&self.app);
@@ -308,11 +322,10 @@ impl Account {
             let _ = commands::update_settings(&self.app, |s| s.account.key_storage = KeyStorage::Local);
             *self.notice.lock() = r.notice.clone();
         }
-        if r.keys_changed {
-            if c.engine.requeue_auth_failures() > 0 {
-                let _ = self.app.emit("history-changed", "");
-            }
-            let _ = self.app.emit("keys-changed", "");
+        if r.auto_chose_cloud {
+            // This computer picked "Your account (synced)" by itself: mirror it for the UI.
+            let _ = commands::update_settings(&self.app, |s| s.account.key_storage = KeyStorage::Cloud);
+            *self.notice.lock() = r.notice.clone();
         }
         if r.items_changed {
             let _ = self.app.emit("dictionary-changed", "");
@@ -432,6 +445,7 @@ pub async fn account_sign_out(app: AppHandle) -> Res<AccountStatus> {
     let engine = a.engine()?.clone();
     engine.sign_out().await;
     *a.last_error.lock() = None;
+    *a.notice.lock() = None;
     Ok(a.emit())
 }
 

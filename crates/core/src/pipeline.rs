@@ -397,8 +397,8 @@ impl Engine {
         let id = rec.id.clone();
         let stop_at = Instant::now();
         if !rec.heard_speech {
-            let _ = self.db.set_status(&id, Status::Empty);
-            self.archive_audio_later(&id, &rec.pcm);
+            // The speech detector found no speech in any piece: nothing worth keeping.
+            self.discard_silent(&id, &rec.pcm);
             return Ok(Outcome::NoSpeech { id });
         }
         let _ = self.db.set_status(&id, Status::Transcribing);
@@ -635,18 +635,8 @@ impl Engine {
     ) -> Result<String, ProviderError> {
         let settings = self.settings();
         let model = self.factory.text_model(&self.keys(), settings.providers.cleanup_provider);
-        let system = vec![
-            SystemBlock { text: prompts::base_system_block(&dictionary::prompt_listing(entries)), cache: true },
-            SystemBlock { text: prompts::mode_block(mode, level), cache: true },
-        ];
-        let base_ctx = CleanupContext {
-            app_name: Some(ctx.app.name.clone()).filter(|n| !n.is_empty()),
-            category: ctx.app.category,
-            window_title: if use_ctx { Some(ctx.app.title.clone()).filter(|t| !t.is_empty()) } else { None },
-            text_before_cursor: before,
-            previous_part: None,
-            part: None,
-        };
+        let system = cleanup_system_blocks(entries, mode, level);
+        let base_ctx = cleanup_context_for(ctx, before, use_ctx);
         let chunks = if text::word_count(text_in) > CLEANUP_SPLIT_THRESHOLD {
             text::split_for_cleanup(text_in, CLEANUP_CHUNK_WORDS)
         } else {
@@ -694,12 +684,11 @@ impl Engine {
     pub async fn run_instruction(&self, instruction: &str, selection: Option<&str>, ctx: &CaptureContext) -> Result<String, ProviderError> {
         let settings = self.settings();
         let entries = self.db.dict_all().unwrap_or_default();
-        let user_words: Vec<dictionary::DictEntry> = entries.iter().filter(|e| e.uses > 0 || e.source != dictionary::EntrySource::Builtin).cloned().collect();
         let model = self.factory.text_model(&self.keys(), settings.providers.cleanup_provider);
         let c = CleanupContext { app_name: Some(ctx.app.name.clone()).filter(|n| !n.is_empty()), ..Default::default() };
         let req = TextRequest {
             model: cleanup_model(&settings),
-            system: vec![SystemBlock { text: prompts::command_system_block(&dictionary::prompt_listing(&user_words)), cache: true }],
+            system: command_system_blocks(&entries),
             user: prompts::command_user_message(selection, instruction, &c),
             max_tokens: max_tokens_for(selection.unwrap_or("")).max(2048),
         };
@@ -820,7 +809,9 @@ impl Engine {
         let mut texts = Vec::new();
         let mut prev = String::new();
         for mut s in segs {
-            if s.status == "done" {
+            // A piece that came back empty is tried again when the user asked for "try anyway".
+            let empty_done = s.text.as_deref().unwrap_or("").trim().is_empty();
+            if s.status == "done" && !(force_all && empty_done) {
                 let t = s.text.clone().unwrap_or_default();
                 prev.push(' ');
                 prev.push_str(&t);
@@ -893,6 +884,33 @@ impl Engine {
                 let _ = self.db.set_status(&it.id, Status::Queued);
                 n += 1;
             }
+        }
+        n
+    }
+
+    /// Removes a recording that holds no speech (row, segments and audio file) at once.
+    /// Only for recordings where the speech detector heard nothing in any piece; anything
+    /// that had speech is kept even if the transcript came back empty.
+    fn discard_silent(&self, id: &str, pcm: &Path) {
+        if let Ok(Some(path)) = self.db.delete(id) {
+            let _ = std::fs::remove_file(path);
+        }
+        let _ = std::fs::remove_file(pcm);
+        let _ = std::fs::remove_file(pcm.with_extension("flac"));
+    }
+
+    /// Clears out "No speech" rows left by older versions (nothing was ever heard in them).
+    /// Returns how many were removed.
+    pub fn purge_silent_items(&self) -> usize {
+        let mut n = 0;
+        for id in self.db.silent_empty_items().unwrap_or_default() {
+            if self.is_active(&id) {
+                continue;
+            }
+            if let Ok(Some(path)) = self.db.delete(&id) {
+                let _ = std::fs::remove_file(path);
+            }
+            n += 1;
         }
         n
     }
@@ -1001,6 +1019,33 @@ pub fn looks_like_cleanup(input: &str, output: &str) -> bool {
     let too_long = o > (i as f64 * 1.6) as usize + 8;
     let too_short = i >= 12 && o * 3 < i;
     !(too_long || too_short)
+}
+
+/// The system blocks sent for a dictation cleanup: rules + dictionary, then mode + level.
+/// The pipeline and the "AI instructions" preview both build them here.
+pub(crate) fn cleanup_system_blocks(entries: &[dictionary::DictEntry], mode: &Mode, level: CleanupLevel) -> Vec<SystemBlock> {
+    vec![
+        SystemBlock { text: prompts::base_system_block(&dictionary::prompt_listing(entries)), cache: true },
+        SystemBlock { text: prompts::mode_block(mode, level), cache: true },
+    ]
+}
+
+/// What the cleanup model is told about where the text is going.
+pub(crate) fn cleanup_context_for(ctx: &CaptureContext, before: Option<String>, use_ctx: bool) -> CleanupContext {
+    CleanupContext {
+        app_name: Some(ctx.app.name.clone()).filter(|n| !n.is_empty()),
+        category: ctx.app.category,
+        window_title: if use_ctx { Some(ctx.app.title.clone()).filter(|t| !t.is_empty()) } else { None },
+        text_before_cursor: before,
+        previous_part: None,
+        part: None,
+    }
+}
+
+/// Voice commands and transforms: only words the user added or has used reach the prompt.
+pub(crate) fn command_system_blocks(entries: &[dictionary::DictEntry]) -> Vec<SystemBlock> {
+    let user_words: Vec<dictionary::DictEntry> = entries.iter().filter(|e| e.uses > 0 || e.source != dictionary::EntrySource::Builtin).cloned().collect();
+    vec![SystemBlock { text: prompts::command_system_block(&dictionary::prompt_listing(&user_words)), cache: true }]
 }
 
 fn cleanup_model(s: &Settings) -> String {
@@ -1309,8 +1354,8 @@ impl Session {
         }
         let db = &self.engine.db;
         let _ = db.set_recording_info(&self.id, duration_ms as i64, Some(&self.pcm.to_string_lossy()));
-        if duration_ms < 600 {
-            // Accidental taps: nothing worth keeping.
+        if duration_ms < 600 || !self.segmenter.heard_speech() {
+            // Accidental taps and recordings with no speech in them: nothing worth keeping.
             let _ = db.delete(&self.id);
             let _ = std::fs::remove_file(&self.pcm);
         } else {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, events, type AccountDevice, type AccountStatus, type KeyStorage } from "../../shared/api";
-import { KEY_STORAGE_DESCRIPTIONS, accountState, syncLine, timeAgo, whoLabel } from "../../shared/account";
+import { KEY_STORAGE_DESCRIPTIONS, accountState, keyChoiceText, showKeyStorageControl, type AccountStatusWithChoice, syncLine, timeAgo, whoLabel } from "../../shared/account";
 import { ConfirmDialog, Segmented, SettingGroup, SettingRow, errorText, useToast } from "../components";
 import { useAccountStatus } from "../useAccount";
 
@@ -8,7 +8,8 @@ type Confirm = null | "restore" | "remove-cloud-keys" | "delete" | { signOutDevi
 
 export default function AccountSection({ onDone }: { onDone?: () => void }) {
   const toast = useToast();
-  const { status, setStatus } = useAccountStatus();
+  const { status: baseStatus, setStatus } = useAccountStatus();
+  const status = baseStatus as AccountStatusWithChoice | null;
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [busy, setBusy] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
@@ -174,11 +175,7 @@ export default function AccountSection({ onDone }: { onDone?: () => void }) {
       {signedIn && status && status.keyStorageChosen === false && (
         <div className="card account-choose" role="region" aria-label="Choose where to keep your API keys">
           <strong>One last step: where should your API keys be kept?</strong>
-          <p className="muted">
-            Nothing moves until you choose, and you can change it later. This choice is just for this computer. If your
-            account already has keys from another computer, they will be used here (this computer's own keys are kept as a
-            backup).
-          </p>
+          <p className="muted">{keyChoiceText(status)}</p>
           <div className="account-choose-btns">
             <button className="btn btn-dark" disabled={busy} onClick={() => setKeyStorage("cloud")}>
               In my account (synced)
@@ -213,15 +210,19 @@ export default function AccountSection({ onDone }: { onDone?: () => void }) {
                 </button>
               </div>
             </SettingRow>
-            <SettingRow title="Where to keep your API keys" description={KEY_STORAGE_DESCRIPTIONS[status.keyStorage]} stacked>
-              <Segmented<KeyStorage>
+            <SettingRow
+              title="Where to keep your API keys"
+              description={showKeyStorageControl(status) ? KEY_STORAGE_DESCRIPTIONS[status.keyStorage] : "Not chosen yet: pick one of the two buttons above."}
+              stacked
+            >
+              {showKeyStorageControl(status) && <Segmented<KeyStorage>
                 value={status.keyStorage}
                 options={[
                   { value: "local", label: "This computer only" },
                   { value: "cloud", label: "Your account (synced)" },
                 ]}
                 onChange={setKeyStorage}
-              />
+              />}
             </SettingRow>
             <SettingRow
               title="Remove keys from your account"

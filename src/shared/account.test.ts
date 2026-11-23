@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accountState, keyStorageNote, shouldOfferSignIn, syncLine, timeAgo, whoLabel } from "./account";
+import { accountState, keyChoiceText, keyStorageNote, showKeyStorageControl, shouldOfferSignIn, syncLine, timeAgo, whoLabel } from "./account";
 
 const NOW = 1_700_000_000_000;
 
@@ -65,5 +65,18 @@ describe("whoLabel / shouldOfferSignIn", () => {
     expect(shouldOfferSignIn({ available: true, signedIn: true }, false)).toBe(false);
     expect(shouldOfferSignIn({ available: false, signedIn: false }, false)).toBe(false);
     expect(shouldOfferSignIn(null, false)).toBe(false);
+  });
+});
+
+describe("key choice", () => {
+  it("hides the segmented control until the choice is made, so a click always acts", () => {
+    expect(showKeyStorageControl({ keyStorageChosen: false })).toBe(false);
+    expect(showKeyStorageControl({ keyStorageChosen: true })).toBe(true);
+    expect(showKeyStorageControl({})).toBe(true);
+  });
+  it("says which keys would be used", () => {
+    expect(keyChoiceText({ keyChoice: "differ" })).toMatch(/account's keys will be used here/);
+    expect(keyChoiceText({ keyChoice: "own_only" })).toMatch(/this computer's keys are uploaded/);
+    expect(keyChoiceText({})).toMatch(/Nothing moves until you choose/);
   });
 });

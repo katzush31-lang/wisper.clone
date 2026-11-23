@@ -15,6 +15,29 @@ pub enum AppCategory {
 }
 
 impl AppCategory {
+    pub const ALL: [AppCategory; 7] = [
+        AppCategory::Email,
+        AppCategory::WorkChat,
+        AppCategory::PersonalChat,
+        AppCategory::AiAssistant,
+        AppCategory::Document,
+        AppCategory::Code,
+        AppCategory::Other,
+    ];
+
+    /// Short plain name for the UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            AppCategory::Email => "Email apps",
+            AppCategory::WorkChat => "Work chat (Slack, Teams)",
+            AppCategory::PersonalChat => "Personal chat (WhatsApp, Telegram)",
+            AppCategory::AiAssistant => "AI assistants (Claude, ChatGPT)",
+            AppCategory::Document => "Documents and notes",
+            AppCategory::Code => "Code editors and terminals",
+            AppCategory::Other => "Other apps",
+        }
+    }
+
     pub fn describe(self) -> &'static str {
         match self {
             AppCategory::Email => "an email app",
