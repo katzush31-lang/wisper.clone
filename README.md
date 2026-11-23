@@ -37,6 +37,16 @@ If Wispr Flow is still running, quit it first. Both apps use **Ctrl + Win** by d
 
 Wisper starts recording the instant you press the keys, so you don't need to pause before speaking. There is no time limit. Long dictations are transcribed in pieces while you're still talking, so they finish quickly.
 
+## Using Wisper on more than one computer (optional)
+
+You don't need an account: Wisper works fully on its own. If you use it on several computers, open **Settings → Account → Sign in with Google**. Your settings, shortcuts, modes, dictionary, snippets and word counts then sync between your computers. History, recordings and Scratchpad notes stay on each computer.
+
+The first time you sign in on a computer, choose where that computer keeps its API keys:
+- **In my account (synced):** keys are encrypted on Wisper's server and shared with your other computers that also choose this, so you paste them only once.
+- **This computer only:** keys never leave this PC.
+
+**Remove keys from your account** deletes the account's copy; every computer keeps the keys it already has. Signing out never deletes keys that exist only on that computer.
+
 ## If something goes wrong
 
 - **Nothing pastes:** click into a text box first. If no text box is selected, the bar shows your text with a **Copy** button, and it's also in History. Apps running as administrator can't receive pasted text from normal apps; that's a Windows rule.

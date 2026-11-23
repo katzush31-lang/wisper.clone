@@ -972,3 +972,22 @@ async fn removing_one_provider_still_propagates_but_removing_all_does_not_blank_
     assert_eq!(b.keys.get("anthropic").as_deref(), Some(KEY_A));
     assert_eq!(b.engine.key_storage(), Some(KeyStorage::Cloud));
 }
+
+#[tokio::test]
+async fn choosing_cloud_again_after_own_removal_sticks_even_with_no_keys() {
+    // Reviewer's case: remove keys from the account, clear this computer's key too, then pick
+    // "Your account" again with nothing to upload. The next sync must not flip back to Local.
+    let fake = Fake::start().await;
+    let mut a = Computer::new(&fake.url());
+    a.sign_in("u1").await;
+    a.choose(KeyStorage::Cloud).await;
+    a.set_key("anthropic", KEY_A).await;
+    pause().await;
+    a.engine.remove_cloud_keys().await.unwrap();
+    a.keys.set("anthropic", "");
+    a.choose(KeyStorage::Cloud).await;
+    let r = a.sync().await;
+    assert!(!r.switched_to_local);
+    assert!(r.notice.is_none());
+    assert_eq!(a.engine.key_storage(), Some(KeyStorage::Cloud));
+}

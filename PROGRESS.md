@@ -12,6 +12,8 @@
 - **App (`src-tauri`)**: keyboard/mouse hook with Start-menu masking, cpal capture (+warm pre-roll), clipboard paste with full restore, UI Automation context/selection, media pause/mute with crash-safe restore, controller (bar states, undo/redo-as, paste/copy last, transforms, Scratchpad dictation, queue worker, notifications), Credential Manager keys, backup/restore, auto-update.
 - **UI (`src`)**: home + history detail, insights, dictionary (+suggestions, CSV import), snippets (+JSON import), style (modes, custom modes, per-app styles), transforms, scratchpad, full settings, floating bar.
 
+| 2026-11-23 | Accounts (optional) | Google Sign-In, encrypted cloud API keys (per-computer choice), sync of settings/dictionary/snippets/word counts via a Cloudflare Worker + D1 (`cloud/`). Design: `docs/ACCOUNTS.md`. Independent security review: 4 rounds, signed off. |
+
 ## Decisions made during review
 - Spoken mode switch needs a pause/punctuation after the phrase ("As an email, …") or the word "mode/style/format" with a lead-in ("In list mode …"), so ordinary sentences are never cut.
 - Undo/redo of an inserted dictation works by Ctrl+Z + paste, so it's only allowed in the same window, within 2 minutes, and if nothing was typed since.

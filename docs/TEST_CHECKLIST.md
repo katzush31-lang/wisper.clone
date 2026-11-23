@@ -64,3 +64,14 @@ Tick these off after installing. If something doesn't behave as described, note 
 - [ ] Tray icon → "Pause shortcuts" stays in sync with the "Shortcuts enabled" setting (either one changes the other), and the choice is remembered after restarting Wisper.
 - [ ] Turn on the always-visible bar: you can click and hover on things right next to it; only the small pill itself responds.
 - [ ] Settings → Backup & account → Export backup, then Restore from it.
+
+## 9. Accounts (optional)
+- [ ] Settings → Account → **Sign in with Google**: the browser opens, you pick your account, the browser says you can close the tab, and Wisper shows your name.
+- [ ] Choose **In my account (synced)** for your keys. Settings → AI providers says "Stored in your account and synced".
+- [ ] On your second computer: install, sign in with the same Google account, choose **In my account**. Your keys, shortcuts, modes, dictionary words and snippets appear without pasting anything. Dictate: it works.
+- [ ] Add a dictionary word on one computer; within a few minutes (or press **Sync now**) it appears on the other.
+- [ ] Insights says "All your computers" and the word counts add up.
+- [ ] On one computer switch to **This computer only**: nothing changes on the other computer.
+- [ ] Your computers list shows both. Sign out the other one from here: it asks you to sign in again there, and its keys are only removed if they were the synced ones.
+- [ ] Sign out: Wisper keeps working (if keys were synced, paste them again or sign back in).
+- [ ] Without signing in at all, everything works exactly as before.

@@ -463,6 +463,14 @@ impl SyncEngine {
         news
     }
 
+    /// Records any removal marker as seen, even a newer one (the user just chose Cloud knowing
+    /// the account's keys were removed), so the next sync doesn't switch back to local.
+    fn acknowledge_removal(&self, remote: &super::client::RemoteKeys) {
+        let seen: Option<i64> = self.meta(META_REMOVED_SEEN).and_then(|v| v.parse().ok());
+        let now_seen = seen.unwrap_or(0).max(remote.removed_at.unwrap_or(0));
+        let _ = self.db.set_meta(META_REMOVED_SEEN, &now_seen.to_string());
+    }
+
     /// This computer keeps its own keys and no longer syncs them.
     fn stop_syncing_keys(&self) {
         let _ = self.db.set_meta(META_MODE, "local");
@@ -507,7 +515,7 @@ impl SyncEngine {
                 KeyStorage::Cloud if from == Some(KeyStorage::Local) => {
                     // Choosing Cloud again acknowledges any earlier removal; uploading clears it.
                     let remote = self.client.get_keys().await?;
-                    let _ = self.removal_is_new(&remote);
+                    self.acknowledge_removal(&remote);
                     for p in PROVIDERS {
                         if let Some(k) = self.keys.get(p).filter(|k| !k.is_empty()) {
                             self.client.put_key(p, &k).await?;
