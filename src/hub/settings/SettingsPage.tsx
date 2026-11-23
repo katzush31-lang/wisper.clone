@@ -1,5 +1,5 @@
-// Settings as a full page (not a pop-up): section list with plain-English hints on the left,
-// the chosen section on the right.
+// Settings as a full page (not a pop-up): sections as a row of tabs along the top,
+// the chosen section underneath with a plain-English line about what it covers.
 import { useEffect, useRef, type ReactNode } from "react";
 import { useSettings } from "../useSettings";
 import { SETTINGS_SECTIONS, validSection } from "../nav";
@@ -26,7 +26,7 @@ export default function SettingsPage({ section: raw, onSection, onBusy }: Props)
   const first = useRef(true);
 
   useEffect(() => {
-    mainRef.current?.scrollTo({ top: 0 });
+    mainRef.current?.closest(".content")?.scrollTo({ top: 0 });
     // Move keyboard focus to the new section's heading (not on first load), so screen readers announce it.
     if (first.current) first.current = false;
     else headRef.current?.focus();
@@ -70,34 +70,30 @@ export default function SettingsPage({ section: raw, onSection, onBusy }: Props)
   }
 
   return (
-    <div className="settings-page">
-      <nav className="settings-nav" aria-label="Settings sections">
-        <h1 className="settings-nav-title">Settings</h1>
+    <div className="page settings-page" ref={mainRef}>
+      <h1 className="page-title">Settings</h1>
+      <nav className="settings-tabs" aria-label="Settings sections">
         {SETTINGS_SECTIONS.map((s) => (
           <button
             key={s.id}
-            className="settings-nav-item"
+            className="settings-tab"
             aria-current={s.id === section ? "page" : undefined}
+            title={s.hint}
             onClick={() => onSection(s.id)}
           >
             {s.icon}
-            <span>
-              <span className="settings-nav-label">{s.label}</span>
-              <span className="settings-nav-hint">{s.hint}</span>
-            </span>
+            {s.label}
           </button>
         ))}
       </nav>
-      <div className="settings-main" ref={mainRef}>
-        <div className="settings-inner">
-          <header className="settings-head">
-            <h2 ref={headRef} tabIndex={-1}>
-              {current.label}
-            </h2>
-            <p>{current.hint}.</p>
-          </header>
-          {body}
-        </div>
+      <div className="settings-body">
+        <header className="settings-head">
+          <h2 ref={headRef} tabIndex={-1}>
+            {current.label}
+          </h2>
+          <p>{current.hint}.</p>
+        </header>
+        {body}
       </div>
     </div>
   );

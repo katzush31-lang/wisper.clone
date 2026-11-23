@@ -34,6 +34,13 @@
   --warning: #8a5a00;
   --focus: color-mix(in srgb, var(--accent) 30%, transparent);
   --focus-ring: #15664d;
+  --band: #0f2a21;
+  --band-text: #eef6f2;
+  --band-muted: #b5c9c0;
+  --band-hover: rgba(255, 255, 255, 0.08);
+  --band-line: rgba(255, 255, 255, 0.18);
+  --band-accent: #6fdcb0;
+  --band-focus: #6fdcb0;
   --shadow: 0 1px 2px rgba(16, 24, 20, 0.06);
   --shadow-pop: 0 12px 40px rgba(16, 24, 20, 0.18);
   --radius-lg: 14px;
@@ -70,6 +77,9 @@
   --success: #5cc98a;
   --warning: #e3b045;
   --focus-ring: #86e0bc;
+  --band: #0a1511;
+  --band-text: #e8ecea;
+  --band-muted: #a3b5ad;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-pop: 0 12px 40px rgba(0, 0, 0, 0.5);
   color-scheme: dark;

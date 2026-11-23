@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { CircleHelp, Moon } from "lucide-react";
-import Sidebar from "./Sidebar";
 import TitleBar from "./TitleBar";
 import JumpTo, { type JumpItem } from "./JumpTo";
 import HomePage from "./pages/HomePage";
@@ -164,17 +163,21 @@ export default function App() {
           <a className="skip-link" href="#main">
             Skip to content
           </a>
-          <TitleBar dark={dark} pageTitle={pageLabel(page)} onToggleTheme={toggleTheme} onOpenJump={() => setJumpOpen(true)} />
-          <div className="app-body">
-            <Sidebar page={page} onNavigate={setPage} onOpenHelp={() => openUrl(HELP_URL)} />
-            <main id="main" className="content scroll" aria-label={pageLabel(page)}>
-              {page === "settings" ? (
-                <SettingsPage section={section} onSection={setSection} onBusy={setCaptureBusy} />
-              ) : (
-                pages[page]
-              )}
-            </main>
-          </div>
+          <TitleBar
+            dark={dark}
+            page={page}
+            onNavigate={setPage}
+            onToggleTheme={toggleTheme}
+            onOpenJump={() => setJumpOpen(true)}
+            onOpenHelp={() => openUrl(HELP_URL)}
+          />
+          <main id="main" className="content scroll" aria-label={pageLabel(page)}>
+            {page === "settings" ? (
+              <SettingsPage section={section} onSection={setSection} onBusy={setCaptureBusy} />
+            ) : (
+              pages[page]
+            )}
+          </main>
           {jumpOpen && <JumpTo items={jumpItems} onClose={() => setJumpOpen(false)} />}
         </div>
       </ToastProvider>

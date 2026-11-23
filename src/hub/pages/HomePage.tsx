@@ -119,53 +119,50 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
         <h1 className="page-title">{name ? `${greeting()}, ${name}` : greeting()}</h1>
       </div>
 
-      <section className="talk" aria-labelledby="talk-title">
-        {keysMissing && (
-          <div className="talk-warn" role="alert">
-            <AlertTriangle size={17} aria-hidden />
-            <span>Wisper can’t turn speech into text until your AI keys are added.</span>
-            <button className="btn btn-dark btn-sm" onClick={() => onOpenSettings("providers")}>
-              Add AI keys
-            </button>
-          </div>
-        )}
-        <div className="talk-main">
-          <div className="talk-how">
-            <h2 id="talk-title" className="talk-title">
-              To dictate, hold
-            </h2>
-            <div className="talk-keys" aria-label={settings ? shortcut : "your shortcut"}>
-              {keys.length ? (
-                keys.map((k, i) => (
-                  <span key={k} className="talk-keywrap">
-                    {i > 0 && <span className="talk-plus" aria-hidden>+</span>}
-                    <kbd className="talk-key">{k}</kbd>
-                  </span>
-                ))
-              ) : (
-                <kbd className="talk-key">…</kbd>
-              )}
-            </div>
-            <p className="talk-sub">Speak, then let go. Your words are typed wherever your cursor is.</p>
-          </div>
-          <ul className="talk-tips">
-            <li>
-              <span>Hands-free</span>
-              <span className="muted">Double-tap the shortcut, tap again to finish</span>
-            </li>
-            <li>
-              <span>Cancel</span>
-              <span className="muted">
-                Press <kbd>Esc</kbd> while recording
-              </span>
-            </li>
-            <li>
-              <button className="link-btn" onClick={() => setExplain((v) => !v)} aria-expanded={explain}>
-                {explain ? "Hide the steps" : "Show me step by step"}
-              </button>
-            </li>
-          </ul>
+      {keysMissing && (
+        <div className="talk-warn" role="alert">
+          <AlertTriangle size={17} aria-hidden />
+          <span>Wisper can’t turn speech into text until your AI keys are added.</span>
+          <button className="btn btn-dark btn-sm" onClick={() => onOpenSettings("providers")}>
+            Add AI keys
+          </button>
         </div>
+      )}
+
+      <section className="talk" aria-labelledby="talk-title">
+        <div className="talk-how">
+          <h2 id="talk-title" className="talk-title">
+            Hold to dictate
+          </h2>
+          <div className="talk-keys" aria-label={settings ? shortcut : "your shortcut"}>
+            {keys.length ? (
+              keys.map((k, i) => (
+                <span key={k} className="talk-keywrap">
+                  {i > 0 && <span className="talk-plus" aria-hidden>+</span>}
+                  <kbd className="talk-key">{k}</kbd>
+                </span>
+              ))
+            ) : (
+              <kbd className="talk-key">…</kbd>
+            )}
+          </div>
+        </div>
+        <ul className="talk-tips">
+          <li>Speak, then let go. Your words appear wherever your cursor is.</li>
+          <li>
+            <strong>Double-tap</strong> to keep going hands-free. <kbd>Esc</kbd> cancels.
+          </li>
+          <li>
+            <button className="link-btn" onClick={() => setExplain((v) => !v)} aria-expanded={explain}>
+              {explain ? "Hide the steps" : "Show me step by step"}
+            </button>
+          </li>
+        </ul>
+        <dl className="talk-stats" aria-label="Your numbers">
+          <Stat value={stats ? compactNumber(stats.totalWords) : "0"} label="words" />
+          <Stat value={stats ? String(Math.round(stats.wpm)) : "0"} label="per minute" />
+          <Stat value={stats ? String(stats.streakDays) : "0"} label={stats?.streakDays === 1 ? "day running" : "days running"} />
+        </dl>
         {explain && (
           <ol className="talk-steps">
             <li>Click into any app where you would normally type.</li>
@@ -173,11 +170,6 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
             <li>Let go. Your words are cleaned up and typed in for you.</li>
           </ol>
         )}
-        <dl className="talk-stats" aria-label="Your numbers">
-          <Stat value={stats ? compactNumber(stats.totalWords) : "0"} label="words dictated" />
-          <Stat value={stats ? String(Math.round(stats.wpm)) : "0"} label="words per minute" />
-          <Stat value={stats ? String(stats.streakDays) : "0"} label={stats?.streakDays === 1 ? "day in a row" : "days in a row"} />
-        </dl>
       </section>
 
       {shouldOfferSignIn(account, cardDismissed) && (
@@ -236,18 +228,18 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
           {query.trim() ? `Nothing matches “${query.trim()}”.` : "Nothing on that day."}
         </div>
       ) : (
-        groups.map((g) => (
-          <section key={g.label} className="home-day" aria-label={g.label}>
-            <h3 className="home-day-label">{g.label}</h3>
-            <div className="list">
+        <div className="hist" role="list" aria-label="Your dictations">
+          {groups.map((g) => (
+            <div key={g.label} role="presentation">
+              <h3 className="hist-day">{g.label}</h3>
               {g.items.map((it) => {
                 const st = statusInfo(it);
                 const text = itemText(it);
                 return (
-                  <div key={it.id} className="list-row home-row">
-                    <button className="home-open" onClick={() => setOpenId(it.id)} aria-label={`Open dictation from ${timeLabel(it.createdAt)}`}>
-                      <span className="home-time muted">{timeLabel(it.createdAt)}</span>
-                      <span className="home-text">
+                  <div key={it.id} className="hist-row" role="listitem">
+                    <button className="hist-open" onClick={() => setOpenId(it.id)} aria-label={`Open dictation from ${timeLabel(it.createdAt)}`}>
+                      <span className="hist-time">{timeLabel(it.createdAt)}</span>
+                      <span className="hist-text">
                         {text ? <span className="home-snippet">{text}</span> : null}
                         {st && (
                           <span className={`home-chip ${st.tone}`}>
@@ -256,18 +248,21 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
                           </span>
                         )}
                       </span>
+                      <span className="hist-app">{it.appName ?? ""}</span>
                     </button>
-                    {text && (
-                      <button className="icon-btn home-copy" onClick={() => copy(text)} aria-label="Copy this text" title="Copy">
+                    {text ? (
+                      <button className="icon-btn hist-copy" onClick={() => copy(text)} aria-label="Copy this text" title="Copy">
                         <ClipboardCopy size={16} />
                       </button>
+                    ) : (
+                      <span className="hist-copy-space" />
                     )}
                   </div>
                 );
               })}
             </div>
-          </section>
-        ))
+          ))}
+        </div>
       )}
 
       {hasMore && (

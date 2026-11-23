@@ -1,72 +1,45 @@
-/* Settings is a full page: section list on the left (each with a one-line hint), the chosen section on the right. */
+/* Settings is a full page: sections as a row of tabs along the top, the chosen one below. */
 .settings-page {
-  flex: 1;
-  display: flex;
-  min-height: 0;
+  width: 100%;
+  max-width: 1080px;
 }
-.settings-nav {
-  width: 250px;
-  flex-shrink: 0;
-  border-right: 1px solid var(--line);
-  padding: 28px 12px 20px;
+.settings-tabs {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  overflow-y: auto;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 18px 0 26px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
 }
-.settings-nav-title {
-  font-size: 24px;
-  font-weight: 700;
-  letter-spacing: -0.025em;
-  padding: 0 10px 14px;
-  margin: 0;
-}
-.settings-nav-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 11px;
-  border: none;
-  background: transparent;
+.settings-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 14px 0 11px;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  background: var(--panel);
   color: var(--text);
-  text-align: left;
-  padding: 9px 10px;
-  border-radius: 9px;
-  cursor: pointer;
-}
-.settings-nav-item > svg {
-  flex-shrink: 0;
-  margin-top: 2px;
-  color: var(--text-muted);
-}
-.settings-nav-item:hover {
-  background: var(--row-hover);
-}
-.settings-nav-item[aria-current="page"] {
-  background: var(--nav-active);
-}
-.settings-nav-item[aria-current="page"] > svg {
-  color: var(--accent);
-}
-.settings-nav-label {
-  display: block;
   font-weight: 600;
-  font-size: 14px;
+  font-size: 13.5px;
 }
-.settings-nav-hint {
-  display: block;
-  font-size: 12.5px;
+.settings-tab svg {
   color: var(--text-muted);
-  line-height: 1.35;
-  margin-top: 1px;
 }
-.settings-main {
-  flex: 1;
-  min-width: 0;
-  overflow-y: auto;
+.settings-tab:hover {
+  border-color: var(--text-faint);
 }
-.settings-inner {
-  max-width: 760px;
-  padding: 28px 36px 40px;
+.settings-tab[aria-current="page"] {
+  background: var(--button-dark);
+  border-color: var(--button-dark);
+  color: var(--button-dark-text);
+}
+.settings-tab[aria-current="page"] svg {
+  color: inherit;
+}
+.settings-body {
+  max-width: 780px;
 }
 .settings-head {
   margin-bottom: 18px;
@@ -229,14 +202,7 @@
 .privacy-note p {
   margin: 0 0 8px;
 }
-@media (max-width: 1000px) {
-  .settings-nav {
-    width: 210px;
-  }
-  .settings-nav-hint {
-    display: none;
-  }
-}
+
 .combo-click {
   border: 1px solid transparent;
   background: transparent;

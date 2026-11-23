@@ -18,9 +18,10 @@ Personal Windows voice-dictation app (a Wispr Flow replacement). Owner is not a 
 - Pushing to `main` publishes a release (GitHub Actions `build.yml`); the owner has given permission to push to `main`.
 
 ## UI design (since the Nov 2026 redesign)
-- Own identity: graphite surfaces, one spruce-green accent, Inter only (no serif), sentence-case labels (no ALL-CAPS eyebrows).
-- Layout: top bar (brand, current page, Ctrl+K "Jump to", theme, window buttons) + slim labelled rail on the left; Settings is a full page, not a pop-up.
-- Pages and settings sections are listed once in `src/hub/nav.tsx`; add new ones there so the rail, Settings and Jump-to stay in sync.
+- Own identity: light content under a dark spruce header band, one spruce-green accent, Inter only (no serif), sentence-case labels (no ALL-CAPS eyebrows).
+- Layout: no sidebar. A dark header band holds the brand, Ctrl+K "Jump to", theme/help and window buttons, plus every page as a tab (the open tab joins the page). Settings is a full page with its sections as pill tabs along the top. Pages are left-aligned under the tabs.
+- Home: warning (if keys missing) → one wide strip (shortcut as keys | tips | numbers) → history as one continuous list (time | text | app | copy).
+- Pages and settings sections are listed once in `src/hub/nav.tsx`; add new ones there so the page tabs, Settings and Jump-to stay in sync.
 - Keyboard: Ctrl+K jump to, Ctrl+1–7 pages, Ctrl+, settings. Keep visible focus, AA contrast, and reduced-motion support.
 - Design skills in `.claude/skills/` (frontend-design, accessibility-review) — use them for UI work.
 

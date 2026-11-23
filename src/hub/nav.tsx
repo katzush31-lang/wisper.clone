@@ -1,4 +1,4 @@
-// One place that lists every page and settings section, so the rail, the settings page
+// One place that lists every page and settings section, so the page tabs, the settings page
 // and the "Jump to" search always agree.
 import {
   BarChart3,

@@ -1,19 +1,13 @@
-/* The "how to talk" panel: the one bold element on Home. Your real shortcut, drawn as keys. */
-.talk {
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius-lg);
-  background: var(--card);
-  margin-bottom: 30px;
-  overflow: hidden;
-}
+/* One wide strip: your shortcut as keys | tips | your numbers. */
 .talk-warn {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 14px 10px 18px;
+  padding: 10px 12px 10px 16px;
+  margin-bottom: 14px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--warning) 14%, var(--panel));
-  border-bottom: 1px solid var(--panel-border);
-  color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
   font-weight: 500;
 }
 .talk-warn svg {
@@ -23,98 +17,175 @@
 .talk-warn span {
   flex: 1;
 }
-.talk-main {
+.talk {
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
-  gap: 28px;
-  padding: 24px 28px 22px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "how tips stats" "steps steps steps";
+  align-items: center;
+  gap: 0 30px;
+  padding: 20px 24px;
+  margin-bottom: 34px;
+  border-radius: var(--radius-lg);
+  background: var(--accent-soft);
+  border-left: 6px solid var(--accent);
+}
+.talk-how {
+  grid-area: how;
 }
 .talk-title {
-  margin: 0 0 12px;
-  font-size: 14px;
+  margin: 0 0 10px;
+  font-size: 13.5px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--accent-strong);
 }
 .talk-keys {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
 }
 .talk-keywrap {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 .talk-plus {
-  font-size: 20px;
-  color: var(--text-faint);
+  font-size: 18px;
+  color: var(--text-muted);
 }
 kbd.talk-key {
-  min-width: 64px;
-  height: 56px;
-  padding: 0 18px;
-  font-size: 20px;
+  min-width: 58px;
+  height: 50px;
+  padding: 0 16px;
+  font-size: 19px;
   font-weight: 650;
-  border-radius: 10px;
+  border-radius: 9px;
   background: var(--panel);
   border: 1px solid var(--panel-border);
-  border-bottom: 4px solid color-mix(in srgb, var(--accent) 55%, var(--panel-border));
-  box-shadow: 0 1px 0 var(--panel-border);
-}
-.talk-sub {
-  margin: 14px 0 0;
-  color: var(--text-muted);
-  max-width: 44ch;
+  border-bottom: 4px solid var(--accent);
 }
 .talk-tips {
+  grid-area: tips;
   list-style: none;
   margin: 0;
-  padding: 0 0 0 24px;
-  border-left: 1px solid var(--panel-border);
+  padding: 0 0 0 30px;
+  border-left: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 14px;
+  gap: 6px;
+  line-height: 1.45;
 }
-.talk-tips li {
+.talk-stats {
+  grid-area: stats;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  gap: 8px;
+  margin: 0;
 }
-.talk-tips li > span:first-child {
-  font-weight: 600;
+.home-stat {
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-start;
+  min-width: 92px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--panel);
+}
+.home-stat dt {
+  font-size: 12.5px;
+}
+.home-stat-num {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.2;
 }
 .talk-steps {
-  margin: -6px 28px 18px;
+  grid-area: steps;
+  margin: 18px 0 0;
   padding: 12px 16px 12px 34px;
   background: var(--panel);
   border-radius: var(--radius-sm);
   line-height: 1.7;
 }
-.talk-stats {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
+@media (max-width: 1040px) {
+  .talk {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas: "how tips" "stats stats" "steps steps";
+  }
+  .talk-stats {
+    margin-top: 16px;
+  }
+  .home-stat {
+    flex: 1;
+  }
+}
+
+/* History: one continuous list, day names as divider rows, columns for time / text / app. */
+.hist {
+  border-top: 2px solid var(--text);
+}
+.hist-day {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   margin: 0;
-  border-top: 1px solid var(--panel-border);
+  padding: 10px 0 8px;
   background: var(--panel);
-}
-.home-stat {
-  display: flex;
-  flex-direction: column-reverse;
-  padding: 12px 28px 14px;
-  border-left: 1px solid var(--panel-border);
-}
-.home-stat:first-child {
-  border-left: none;
-}
-.home-stat dt {
+  border-bottom: 1px solid var(--line);
   font-size: 13px;
+  font-weight: 700;
 }
-.home-stat-num {
-  margin: 0;
-  font-size: 26px;
-  line-height: 1.2;
+.hist-row {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+}
+.hist-row:hover {
+  background: var(--row-hover);
+}
+.hist-open {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr) 120px;
+  align-items: baseline;
+  gap: 16px;
+  padding: 13px 4px 13px 0;
+  border: none;
+  background: transparent;
+  text-align: left;
+}
+.hist-time {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  padding-left: 4px;
+}
+.hist-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+.hist-app {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hist-copy,
+.hist-copy-space {
+  width: 32px;
+  margin: 0 4px 0 8px;
+  flex-shrink: 0;
+}
+.hist-copy {
+  opacity: 0;
+}
+.hist-row:hover .hist-copy,
+.hist-copy:focus-visible {
+  opacity: 1;
 }
 .home-hist-head {
   display: flex;
@@ -128,54 +199,6 @@ kbd.talk-key {
 }
 .home-hist-head .section-label {
   margin: 0;
-}
-.home-day {
-  margin-top: 14px;
-}
-.home-day-label {
-  font-size: 13px;
-  font-weight: 600;
-
-  color: var(--text-muted);
-  margin: 0 0 8px 2px;
-}
-.home-row {
-  padding: 0;
-  align-items: center;
-  gap: 0;
-}
-.home-open {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 16px;
-  text-align: left;
-  background: transparent;
-  border: none;
-  padding: 14px 8px 14px 20px;
-  border-radius: 0;
-}
-.home-copy {
-  margin-right: 10px;
-  opacity: 0;
-}
-.home-row:hover .home-copy,
-.home-copy:focus-visible {
-  opacity: 1;
-}
-.home-time {
-  width: 64px;
-  flex-shrink: 0;
-  font-size: 13px;
-}
-.home-text {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  align-items: flex-start;
 }
 .home-snippet {
   display: -webkit-box;
@@ -275,15 +298,6 @@ kbd.talk-key {
 .hd-select {
   width: 200px;
   padding: 5px 10px;
-}
-@media (max-width: 820px) {
-  .talk-main {
-    grid-template-columns: 1fr;
-  }
-  .talk-tips {
-    border-left: none;
-    padding-left: 0;
-  }
 }
 
 .home-search {

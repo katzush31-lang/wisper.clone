@@ -2,7 +2,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--frame);
+  background: var(--panel);
 }
 .skip-link {
   position: absolute;
@@ -18,60 +18,47 @@
   top: 6px;
 }
 
-/* ---- top bar: brand, jump-to search, theme, window buttons ---- */
-.titlebar {
-  height: 48px;
+/* ---- header band: always dark, in both themes ---- */
+.appbar {
   flex-shrink: 0;
-  display: grid;
-  grid-template-columns: 1fr minmax(260px, 420px) 1fr;
-  align-items: center;
-  gap: 12px;
-  padding: 0 4px 0 14px;
+  background: var(--band);
+  color: var(--band-text);
 }
-.titlebar-left,
-.titlebar-right {
+.appbar :focus-visible {
+  outline-color: var(--band-focus);
+}
+.appbar-top {
+  height: 46px;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
+  padding: 0 4px 0 18px;
 }
-.titlebar-right {
-  justify-content: flex-end;
+.appbar-drag {
+  flex: 1;
+  align-self: stretch;
 }
-.titlebar-gap {
+.appbar-gap {
   width: 10px;
 }
-.titlebar-page {
-  color: var(--text-muted);
-  font-weight: 500;
-  margin-left: 6px;
-  padding-left: 12px;
-  border-left: 1px solid var(--panel-border);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.jump-btn {
-  display: flex;
+.band-btn {
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  height: 32px;
-  padding: 0 8px 0 12px;
-  border: 1px solid var(--panel-border);
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: none;
   border-radius: 8px;
-  background: var(--panel);
-  color: var(--text-muted);
-  text-align: left;
+  background: transparent;
+  color: var(--band-muted);
 }
-.jump-btn:hover {
-  border-color: var(--text-faint);
-  color: var(--text);
-}
-.jump-btn span {
-  flex: 1;
+.band-btn:hover {
+  background: var(--band-hover);
+  color: var(--band-text);
 }
 .win-btn {
   width: 44px;
-  height: 36px;
+  height: 34px;
   border-radius: 6px;
 }
 .win-close:hover {
@@ -81,96 +68,102 @@
 .logo {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   font-weight: 700;
-  font-size: 15px;
+  font-size: 16px;
   letter-spacing: -0.01em;
+  color: var(--band-text);
 }
 .logo-mark {
   display: grid;
   place-items: center;
   width: 26px;
   height: 26px;
-  border-radius: 7px;
-  background: var(--accent);
-  color: var(--button-dark-text);
+  border-radius: 50%;
+  background: var(--band-accent);
+  color: var(--band);
+}
+.jump-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 260px;
+  height: 32px;
+  margin-right: 6px;
+  padding: 0 6px 0 12px;
+  border: 1px solid var(--band-line);
+  border-radius: 8px;
+  background: var(--band-hover);
+  color: var(--band-muted);
+  text-align: left;
+}
+.jump-btn:hover {
+  color: var(--band-text);
+  border-color: var(--band-muted);
+}
+.jump-btn span {
+  flex: 1;
+}
+.jump-btn kbd {
+  background: transparent;
+  color: var(--band-muted);
+  border-color: var(--band-line);
 }
 
-/* ---- body: rail + content ---- */
-.app-body {
-  flex: 1;
+/* Page tabs: the open one is the same colour as the page, so it reads as one piece. */
+.tabnav {
   display: flex;
-  min-height: 0;
-}
-.rail {
-  width: 92px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
+  align-items: flex-end;
   gap: 2px;
-  padding: 6px 8px 10px;
-  overflow-y: auto;
+  padding: 0 14px;
+  height: 44px;
 }
-.rail-group {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.rail-heading {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--text-faint);
-  text-align: center;
-  margin: 12px 0 4px;
-  padding-top: 10px;
-  border-top: 1px solid var(--panel-border);
-}
-.rail-spacer {
-  flex: 1;
-  min-height: 12px;
-}
-.rail-item {
-  position: relative;
-  display: flex;
-  flex-direction: column;
+.tabnav-item {
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 4px;
-  min-height: 58px;
-  padding: 6px 2px;
+  gap: 7px;
+  height: 38px;
+  padding: 0 14px;
   border: none;
-  border-radius: 10px;
+  border-radius: 10px 10px 0 0;
   background: transparent;
-  color: var(--text-muted);
-  font-size: 12px;
+  color: var(--band-muted);
   font-weight: 600;
-  line-height: 1.2;
+  font-size: 13.5px;
+  white-space: nowrap;
 }
-.rail-item:hover {
-  background: var(--row-hover);
+.tabnav-item:hover {
+  background: var(--band-hover);
+  color: var(--band-text);
+}
+.tabnav-item[aria-current="page"] {
+  background: var(--panel);
   color: var(--text);
 }
-.rail-item[aria-current="page"] {
-  background: var(--nav-active);
-  color: var(--accent-strong);
+.tabnav-item[aria-current="page"] svg {
+  color: var(--accent);
 }
-.rail-item[aria-current="page"]::before {
-  content: "";
-  position: absolute;
-  left: -8px;
-  top: 14px;
-  bottom: 14px;
-  width: 3px;
-  border-radius: 0 3px 3px 0;
-  background: var(--accent);
+.tabnav-sep {
+  width: 1px;
+  height: 20px;
+  margin: 0 8px 9px;
+  background: var(--band-line);
+}
+.tabnav-fill {
+  flex: 1;
+  align-self: stretch;
+}
+@media (max-width: 1060px) {
+  .tabnav-item {
+    padding: 0 10px;
+    gap: 6px;
+  }
 }
 .content {
   flex: 1;
+  min-height: 0;
   min-width: 0;
   background: var(--panel);
-  border-top: 1px solid var(--panel-border);
-  border-left: 1px solid var(--panel-border);
-  border-top-left-radius: var(--radius-lg);
   display: flex;
   flex-direction: column;
   /* Pages scroll inside the white panel (the Scratchpad manages its own scrolling). */
@@ -179,11 +172,12 @@
 }
 .page {
   flex: 1;
-  padding: 32px 44px 48px;
+  padding: 30px 40px 48px;
 }
+/* Pages line up with the tabs on the left rather than floating in the middle. */
 .page-narrow {
-  max-width: 860px;
-  margin: 0 auto;
+  width: 100%;
+  max-width: 1080px;
 }
 .page-header {
   display: flex;
