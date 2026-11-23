@@ -14,7 +14,7 @@ use super::client::{CloudClient, UserInfo};
 use super::merge::merge_sections;
 use super::{hash_hex, now_ms, CloudError, CloudResult, KeyStore, PROVIDERS};
 use crate::db::Db;
-use crate::settings::{KeyStorage, RemoteSection, Settings, KEY_STORAGE_SECTION};
+use crate::settings::{KeyStorage, RemoteSection, Settings};
 
 /// A dictation that finishes late (it was queued offline) has an old `created_at`, so the upload
 /// looks back this far. The server ignores rows it already has; this run also remembers what it sent.
@@ -25,7 +25,9 @@ const META_USER: &str = "cloud_user";
 const META_MERGED: &str = "cloud_merge_done";
 const META_CHOSEN: &str = "key_storage_chosen";
 const META_LAST_OK: &str = "sync_last_ok";
-const CURSORS: [&str; 4] = ["sync_items_pull", "sync_items_push", "sync_stats_push", "sync_stats_pull"];
+const META_MODE: &str = "key_storage_mode";
+const META_BACKUP_FOR: &str = "backup_done_for";
+const CURSORS: [&str; 3] = ["sync_items_pull", "sync_stats_push", "sync_stats_pull"];
 
 fn key_hash_meta(provider: &str) -> String {
     format!("key_hash_{provider}")
@@ -123,9 +125,19 @@ impl SyncEngine {
         Some(self.meta_i64(META_LAST_OK)).filter(|t| *t > 0)
     }
 
+    /// Where this computer keeps API keys, once the user has chosen. This is the one place the
+    /// engine reads the choice (always under its lock); the settings file only mirrors it for
+    /// the UI. It is per computer and never synced.
+    pub fn key_storage(&self) -> Option<KeyStorage> {
+        if !self.key_storage_chosen() {
+            return None;
+        }
+        Some(if self.meta(META_MODE).as_deref() == Some("local") { KeyStorage::Local } else { KeyStorage::Cloud })
+    }
+
     /// True if API keys should be synced with the account right now.
-    pub fn keys_sync_active(&self, settings: &Settings) -> bool {
-        settings.account.key_storage == KeyStorage::Cloud && self.key_storage_chosen()
+    pub fn keys_sync_active(&self) -> bool {
+        self.key_storage() == Some(KeyStorage::Cloud)
     }
 
     // ------------------------------------------------------------ sign in / out
@@ -160,14 +172,26 @@ impl SyncEngine {
         Ok(info)
     }
 
-    /// Everything this computer remembers about being signed in. Settings, dictionary and
-    /// snippets stay. Cached API keys are removed only when `clear_keys` is true.
-    fn local_sign_out(&self, clear_keys: bool) {
-        if clear_keys {
-            for p in PROVIDERS {
-                self.keys.set(p, "");
+    /// Removes this computer's copy of a key ONLY when it is certain the account holds exactly
+    /// that key: key syncing is active here and the key matches what we last synced. Anything
+    /// else (before the choice was made, an upload that never finished, a key edited since)
+    /// might be the only copy, so it stays.
+    fn clear_synced_keys(&self) {
+        if !self.keys_sync_active() {
+            return;
+        }
+        for p in PROVIDERS {
+            if let Some(local) = self.keys.get(p).filter(|k| !k.is_empty()) {
+                if self.meta(&key_hash_meta(p)).as_deref() == Some(hash_hex(&local).as_str()) {
+                    self.keys.set(p, "");
+                }
             }
         }
+    }
+
+    /// Everything this computer remembers about being signed in. Settings, dictionary,
+    /// snippets and API keys stay (keys are handled separately by `clear_synced_keys`).
+    fn local_sign_out(&self) {
         for key in [META_ACCOUNT, META_LAST_OK, "key_hash_openai", "key_hash_anthropic"].into_iter().chain(CURSORS) {
             let _ = self.db.delete_meta(key);
         }
@@ -177,18 +201,22 @@ impl SyncEngine {
     }
 
     /// Signs this computer out. Works offline (the account just keeps listing the device until
-    /// it is removed). With cloud key storage the cached keys are deleted from this computer.
-    pub async fn sign_out(&self, storage: KeyStorage) {
+    /// it is removed). Waits for any sync in progress so it can't restore anything afterwards.
+    pub async fn sign_out(&self) {
+        let _g = self.lock.lock().await;
         let _ = self.client.logout().await;
         self.client.forget_tokens().await;
-        self.local_sign_out(storage == KeyStorage::Cloud);
+        self.clear_synced_keys();
+        self.local_sign_out();
     }
 
-    /// Deletes the account's cloud data, then signs out here.
-    pub async fn delete_account(&self, storage: KeyStorage) -> CloudResult<()> {
+    /// Deletes the account's cloud data, then signs out here. This computer's own keys are kept:
+    /// only the cloud copy is destroyed.
+    pub async fn delete_account(&self) -> CloudResult<()> {
+        let _g = self.lock.lock().await;
         self.client.delete_account().await?;
         self.client.forget_tokens().await;
-        self.local_sign_out(storage == KeyStorage::Cloud);
+        self.local_sign_out();
         Ok(())
     }
 
@@ -199,15 +227,20 @@ impl SyncEngine {
         let _g = self.lock.lock().await;
         let r = self.run(settings).await;
         if let Err(e) = &r {
-            self.after_error(e, settings.account.key_storage);
+            self.after_error(e);
         }
         r
     }
 
     /// If the service says this sign-in is over, become signed out here.
-    fn after_error(&self, e: &CloudError, storage: KeyStorage) {
+    fn after_error(&self, e: &CloudError) {
         if e.needs_sign_in() && !self.client.is_signed_in() {
-            self.local_sign_out(*e == CloudError::Revoked && storage == KeyStorage::Cloud);
+            // Only "removed from the account" clears keys (and then only provably synced ones).
+            // A replayed token or a deleted account keeps them.
+            if *e == CloudError::Revoked {
+                self.clear_synced_keys();
+            }
+            self.local_sign_out();
         }
     }
 
@@ -233,26 +266,21 @@ impl SyncEngine {
         let pull_from = if first { 0 } else { self.meta_i64("sync_items_pull") };
         let pulled = self.client.get_items(pull_from).await?;
         report.items_changed = self.db.apply_remote_items(&pulled.items).map_err(dberr)? > 0;
-        let changed = self.db.items_changed_since(self.meta_i64("sync_items_push")).map_err(dberr)?;
-        for chunk in changed.chunks(500) {
+        // Everything flagged as changed here and not yet uploaded (no clock involved).
+        let dirty = self.db.items_dirty().map_err(dberr)?;
+        for chunk in dirty.chunks(500) {
             self.client.post_items(chunk).await?;
+            self.db.mark_items_pushed(chunk).map_err(dberr)?;
         }
         if pulled.now > 0 {
             self.set_meta("sync_items_pull", &pulled.now.to_string())?;
         }
-        self.set_meta("sync_items_push", &(start - 1).to_string())?;
 
         // 3. Usage numbers.
         report.stats_changed = self.sync_stats().await?;
 
-        // 4. API keys.
-        let storage = report
-            .remote_sections
-            .get(KEY_STORAGE_SECTION)
-            .and_then(|s| s.value.as_str())
-            .and_then(KeyStorage::parse)
-            .unwrap_or(settings.account.key_storage);
-        if storage == KeyStorage::Cloud && self.key_storage_chosen() {
+        // 4. API keys (only when this computer keeps them in the account).
+        if self.keys_sync_active() {
             report.keys_changed = self.sync_keys().await?;
         }
 
@@ -261,19 +289,22 @@ impl SyncEngine {
         Ok(report)
     }
 
-    /// Before anything is exchanged with the account for the first time: keep a copy of this
-    /// computer's settings and database. Never overwrites an existing copy.
+    /// Before anything is exchanged with the account for the first time (and again whenever a
+    /// different account signs in here): keep a copy of this computer's settings and database.
+    /// The very first copy has the plain name; later ones are timestamped so nothing is overwritten.
     fn backup_before_first_sync(&self, settings: &Settings) -> CloudResult<()> {
         let fail = |e: String| CloudError::Server(format!("Wisper couldn't make a safety copy of your data before syncing, so it didn't sync: {e}"));
+        let user = self.meta(META_USER).unwrap_or_default();
+        if !user.is_empty() && self.meta(META_BACKUP_FOR).as_deref() == Some(user.as_str()) {
+            return Ok(()); // already backed up for this account (this is a retry)
+        }
         std::fs::create_dir_all(&self.data_dir).map_err(|e| fail(e.to_string()))?;
-        let sp = self.data_dir.join("settings.before-signin.json");
-        if !sp.exists() {
-            settings.save(&sp).map_err(|e| fail(e.to_string()))?;
-        }
-        let dp = self.data_dir.join("wisper.before-signin.db");
-        if !dp.exists() {
-            self.db.backup_to(&dp).map_err(|e| fail(e.to_string()))?;
-        }
+        let plain_settings = self.data_dir.join("settings.before-signin.json");
+        let plain_db = self.data_dir.join("wisper.before-signin.db");
+        let stem = if plain_settings.exists() || plain_db.exists() { format!("-{}", chrono::Local::now().format("%Y%m%d-%H%M%S%3f")) } else { String::new() };
+        settings.save(&self.data_dir.join(format!("settings.before-signin{stem}.json"))).map_err(|e| fail(e.to_string()))?;
+        self.db.backup_to(&self.data_dir.join(format!("wisper.before-signin{stem}.db"))).map_err(|e| fail(e.to_string()))?;
+        self.set_meta(META_BACKUP_FOR, &user)?;
         Ok(())
     }
 
@@ -345,6 +376,9 @@ impl SyncEngine {
                         self.client.put_key(p, &l).await?;
                         self.set_meta(&key_hash_meta(p), &hash_hex(&l))?;
                     } else {
+                        // The account's key wins, but the replaced key is kept in the credential
+                        // store as "previous-<provider>-api-key" so it is never irrecoverably lost.
+                        self.keys.keep_previous(p, &l);
                         self.keys.set(p, &r.key);
                         self.set_meta(&key_hash_meta(p), &hash_hex(&r.key))?;
                         changed = true;
@@ -371,10 +405,11 @@ impl SyncEngine {
     // ------------------------------------------------------------ keys
 
     /// A key was just set (or cleared with an empty string) on this computer. Uploads it when
-    /// keys are kept in the account; does nothing for local-only storage.
-    pub async fn upload_key(&self, settings: &Settings, provider: &str, key: &str) -> CloudResult<()> {
+    /// keys are kept in the account; does nothing for local-only storage. The choice is read
+    /// here, under the lock, so a switch to local that is in progress always wins.
+    pub async fn upload_key(&self, provider: &str, key: &str) -> CloudResult<()> {
         let _g = self.lock.lock().await;
-        if !self.keys_sync_active(settings) || !PROVIDERS.contains(&provider) {
+        if !self.keys_sync_active() || !PROVIDERS.contains(&provider) {
             return Ok(());
         }
         let r = self.client.put_key(provider, key).await;
@@ -383,31 +418,32 @@ impl SyncEngine {
                 let _ = self.db.delete_meta(&key_hash_meta(provider));
             }
             Ok(()) => self.set_meta(&key_hash_meta(provider), &hash_hex(key))?,
-            Err(e) => self.after_error(e, settings.account.key_storage),
+            Err(e) => self.after_error(e),
         }
         r
     }
 
-    /// The user chose where keys live (`from` is the current setting). Moving to `Local` after
-    /// using the account removes the keys from the account (this computer keeps its copies);
-    /// moving to `Cloud` after `Local` uploads this computer's keys. The very first choice after
-    /// signing in only reconciles, so it can never wipe keys another computer uploaded.
+    /// The user chose where keys live. Moving to `Local` after using the account removes the
+    /// keys from the account (this computer keeps its copies); moving to `Cloud` after `Local`
+    /// uploads this computer's keys. The very first choice after signing in only reconciles, so
+    /// it can never wipe keys another computer uploaded. The new choice is recorded here, under
+    /// the lock and only once the account has been updated; the app mirrors it into settings.
     /// Returns true if a key on this computer changed.
-    pub async fn set_key_storage(&self, from: KeyStorage, to: KeyStorage) -> CloudResult<bool> {
+    pub async fn set_key_storage(&self, to: KeyStorage) -> CloudResult<bool> {
         let _g = self.lock.lock().await;
-        let chosen_before = self.key_storage_chosen();
+        let from = self.key_storage();
         let mut changed = false;
         let r: CloudResult<()> = async {
             match to {
                 KeyStorage::Local => {
-                    if chosen_before && from == KeyStorage::Cloud {
+                    if from == Some(KeyStorage::Cloud) {
                         self.client.delete_keys().await?;
                         for p in PROVIDERS {
                             let _ = self.db.delete_meta(&key_hash_meta(p));
                         }
                     }
                 }
-                KeyStorage::Cloud if chosen_before && from == KeyStorage::Local => {
+                KeyStorage::Cloud if from == Some(KeyStorage::Local) => {
                     for p in PROVIDERS {
                         if let Some(k) = self.keys.get(p).filter(|k| !k.is_empty()) {
                             self.client.put_key(p, &k).await?;
@@ -424,11 +460,12 @@ impl SyncEngine {
         .await;
         match r {
             Ok(()) => {
+                self.set_meta(META_MODE, to.as_str())?;
                 self.set_meta(META_CHOSEN, "1")?;
                 Ok(changed)
             }
             Err(e) => {
-                self.after_error(&e, from);
+                self.after_error(&e);
                 Err(e)
             }
         }

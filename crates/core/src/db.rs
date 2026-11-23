@@ -332,12 +332,12 @@ fn apply_dict_item(tx: &Connection, it: &SyncItem) -> DbResult<bool> {
             return Ok(false);
         }
         if it.deleted || word.is_empty() {
-            tx.execute("UPDATE dictionary SET deleted=1, updated_at=?2 WHERE id=?1", params![id, it.updated_at])?;
+            tx.execute("UPDATE dictionary SET deleted=1, dirty=0, updated_at=?2 WHERE id=?1", params![id, it.updated_at])?;
             return Ok(true);
         }
         retire_other_word(tx, "dictionary", "word", &word, id)?;
         tx.execute(
-            "UPDATE dictionary SET word=?2, replace_json=?3, sounds_like_json=?4, source=?5, starred=?6, keyword=?7, hidden=0, deleted=0, updated_at=?8 WHERE id=?1",
+            "UPDATE dictionary SET word=?2, replace_json=?3, sounds_like_json=?4, source=?5, starred=?6, keyword=?7, hidden=0, deleted=0, dirty=0, updated_at=?8 WHERE id=?1",
             params![id, word, replace, sounds, source, starred, keyword, it.updated_at],
         )?;
         return Ok(true);
@@ -351,7 +351,7 @@ fn apply_dict_item(tx: &Connection, it: &SyncItem) -> DbResult<bool> {
     match by_word {
         None => {
             tx.execute(
-                "INSERT INTO dictionary (word, replace_json, sounds_like_json, source, starred, keyword, created_at, uid, updated_at, deleted) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?7,?9)",
+                "INSERT INTO dictionary (word, replace_json, sounds_like_json, source, starred, keyword, created_at, uid, updated_at, deleted, dirty) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?7,?9,0)",
                 params![word, replace, sounds, source, starred, keyword, it.updated_at, it.uid, it.deleted as i64],
             )?;
             Ok(true)
@@ -364,7 +364,7 @@ fn apply_dict_item(tx: &Connection, it: &SyncItem) -> DbResult<bool> {
                 return Ok(false);
             }
             tx.execute(
-                "UPDATE dictionary SET uid=?2, replace_json=?3, sounds_like_json=?4, source=?5, starred=?6, keyword=?7, hidden=0, deleted=?8, updated_at=?9 WHERE id=?1",
+                "UPDATE dictionary SET uid=?2, replace_json=?3, sounds_like_json=?4, source=?5, starred=?6, keyword=?7, hidden=0, deleted=?8, dirty=0, updated_at=?9 WHERE id=?1",
                 params![id, it.uid, replace, sounds, source, starred, keyword, it.deleted as i64, it.updated_at],
             )?;
             Ok(true)
@@ -381,11 +381,11 @@ fn apply_snippet_item(tx: &Connection, it: &SyncItem) -> DbResult<bool> {
             return Ok(false);
         }
         if it.deleted || trigger.is_empty() {
-            tx.execute("UPDATE snippets SET deleted=1, updated_at=?2 WHERE id=?1", params![id, it.updated_at])?;
+            tx.execute("UPDATE snippets SET deleted=1, dirty=0, updated_at=?2 WHERE id=?1", params![id, it.updated_at])?;
             return Ok(true);
         }
         retire_other_word(tx, "snippets", "trigger", &trigger, id)?;
-        tx.execute("UPDATE snippets SET trigger=?2, expansion=?3, deleted=0, updated_at=?4 WHERE id=?1", params![id, trigger, expansion, it.updated_at])?;
+        tx.execute("UPDATE snippets SET trigger=?2, expansion=?3, deleted=0, dirty=0, updated_at=?4 WHERE id=?1", params![id, trigger, expansion, it.updated_at])?;
         return Ok(true);
     }
     if trigger.is_empty() {
@@ -397,7 +397,7 @@ fn apply_snippet_item(tx: &Connection, it: &SyncItem) -> DbResult<bool> {
     match by_trigger {
         None => {
             tx.execute(
-                "INSERT INTO snippets (trigger, expansion, created_at, uid, updated_at, deleted) VALUES (?1,?2,?3,?4,?3,?5)",
+                "INSERT INTO snippets (trigger, expansion, created_at, uid, updated_at, deleted, dirty) VALUES (?1,?2,?3,?4,?3,?5,0)",
                 params![trigger, expansion, it.updated_at, it.uid, it.deleted as i64],
             )?;
             Ok(true)
@@ -406,7 +406,7 @@ fn apply_snippet_item(tx: &Connection, it: &SyncItem) -> DbResult<bool> {
             if !(it.updated_at > mine || (it.updated_at == mine && it.uid < my_uid)) {
                 return Ok(false);
             }
-            tx.execute("UPDATE snippets SET uid=?2, expansion=?3, deleted=?4, updated_at=?5 WHERE id=?1", params![id, it.uid, expansion, it.deleted as i64, it.updated_at])?;
+            tx.execute("UPDATE snippets SET uid=?2, expansion=?3, deleted=?4, dirty=0, updated_at=?5 WHERE id=?1", params![id, it.uid, expansion, it.deleted as i64, it.updated_at])?;
             Ok(true)
         }
     }
@@ -416,7 +416,7 @@ fn apply_snippet_item(tx: &Connection, it: &SyncItem) -> DbResult<bool> {
 /// (it is marked deleted and gives up the text), because the incoming change is newer.
 fn retire_other_word(tx: &Connection, table: &str, col: &str, text: &str, keep_id: i64) -> DbResult<()> {
     tx.execute(
-        &format!("UPDATE {table} SET {col}={col} || '~' || uid, deleted=1, updated_at=?3 WHERE {col}=?1 AND id<>?2"),
+        &format!("UPDATE {table} SET {col}={col} || '~' || uid, deleted=1, dirty=1, updated_at=?3 WHERE {col}=?1 AND id<>?2"),
         params![text, keep_id, now_ms()],
     )?;
     Ok(())
@@ -506,6 +506,11 @@ fn migrate(conn: &Connection) -> DbResult<()> {
         }
         if !has_column(conn, table, "deleted")? {
             conn.execute(&format!("ALTER TABLE {table} ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0"), [])?;
+        }
+        // 1 = changed on this computer and not yet uploaded. Unlike a time cursor this stays
+        // correct if the computer's clock jumps backwards.
+        if !has_column(conn, table, "dirty")? {
+            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN dirty INTEGER NOT NULL DEFAULT 1"), [])?;
         }
         let ids: Vec<i64> = {
             let mut stmt = conn.prepare(&format!("SELECT id FROM {table} WHERE uid IS NULL"))?;
@@ -823,7 +828,7 @@ impl Db {
                 let r = serde_json::to_string(&e.replace).unwrap();
                 let sl = serde_json::to_string(&e.sounds_like).unwrap();
                 added += tx.execute(
-                    "INSERT OR IGNORE INTO dictionary (word, replace_json, sounds_like_json, source, keyword, created_at, uid, updated_at) VALUES (?1,?2,?3,'builtin',?4,?5,?6,?5)",
+                    "INSERT OR IGNORE INTO dictionary (word, replace_json, sounds_like_json, source, keyword, created_at, uid, updated_at, dirty) VALUES (?1,?2,?3,'builtin',?4,?5,?6,?5,0)",
                     params![e.word, r, sl, e.keyword as i64, now_ms(), new_uid()],
                 )?;
                 // Refresh built-in words the user hasn't edited (edits turn them into "user").
@@ -845,7 +850,7 @@ impl Db {
         let existing: Option<i64> = conn.query_row("SELECT id FROM dictionary WHERE word=?1", [&e.word], |r| r.get(0)).optional()?;
         if let Some(id) = existing {
             conn.execute(
-                "UPDATE dictionary SET hidden=0, deleted=0, replace_json=?2, sounds_like_json=?3, starred=?4, keyword=?5, updated_at=?6,
+                "UPDATE dictionary SET hidden=0, deleted=0, dirty=1, replace_json=?2, sounds_like_json=?3, starred=?4, keyword=?5, updated_at=?6,
                  source=CASE WHEN source='builtin' AND ?7<>'builtin' THEN ?7 ELSE source END WHERE id=?1",
                 params![id, serde_json::to_string(&e.replace).unwrap(), serde_json::to_string(&e.sounds_like).unwrap(), e.starred as i64, e.keyword as i64, now_ms(), source_str(e.source)],
             )?;
@@ -863,7 +868,7 @@ impl Db {
         let conn = self.c();
         retire_tombstone(&conn, "dictionary", "word", &e.word, e.id)?;
         conn.execute(
-            "UPDATE dictionary SET word=?2, replace_json=?3, sounds_like_json=?4, starred=?5, keyword=?6, updated_at=?7,
+            "UPDATE dictionary SET word=?2, replace_json=?3, sounds_like_json=?4, starred=?5, keyword=?6, updated_at=?7, dirty=1,
              source=CASE WHEN source='builtin' THEN 'user' ELSE source END WHERE id=?1",
             params![e.id, e.word, serde_json::to_string(&e.replace).unwrap(), serde_json::to_string(&e.sounds_like).unwrap(), e.starred as i64, e.keyword as i64, now_ms()],
         )?;
@@ -877,7 +882,7 @@ impl Db {
             conn.execute("UPDATE dictionary SET hidden=1 WHERE id=?1", [id])?;
         } else {
             // Soft delete: the row stays (hidden from every list) so the deletion can sync.
-            conn.execute("UPDATE dictionary SET deleted=1, updated_at=?2 WHERE id=?1", params![id, now_ms()])?;
+            conn.execute("UPDATE dictionary SET deleted=1, dirty=1, updated_at=?2 WHERE id=?1", params![id, now_ms()])?;
         }
         Ok(())
     }
@@ -939,13 +944,13 @@ impl Db {
         let conn = self.c();
         if s.id > 0 {
             retire_tombstone(&conn, "snippets", "trigger", &s.trigger, s.id)?;
-            conn.execute("UPDATE snippets SET trigger=?2, expansion=?3, updated_at=?4 WHERE id=?1", params![s.id, s.trigger, s.expansion, now_ms()])?;
+            conn.execute("UPDATE snippets SET trigger=?2, expansion=?3, updated_at=?4, dirty=1 WHERE id=?1", params![s.id, s.trigger, s.expansion, now_ms()])?;
             Ok(s.id)
         } else {
             // Same phrase again (even one that was deleted) updates that row instead of duplicating.
             let existing: Option<i64> = conn.query_row("SELECT id FROM snippets WHERE trigger=?1", [&s.trigger], |r| r.get(0)).optional()?;
             if let Some(id) = existing {
-                conn.execute("UPDATE snippets SET expansion=?2, deleted=0, updated_at=?3 WHERE id=?1", params![id, s.expansion, now_ms()])?;
+                conn.execute("UPDATE snippets SET expansion=?2, deleted=0, dirty=1, updated_at=?3 WHERE id=?1", params![id, s.expansion, now_ms()])?;
                 return Ok(id);
             }
             conn.execute(
@@ -957,7 +962,7 @@ impl Db {
     }
 
     pub fn snippet_delete(&self, id: i64) -> DbResult<()> {
-        self.c().execute("UPDATE snippets SET deleted=1, updated_at=?2 WHERE id=?1", params![id, now_ms()])?;
+        self.c().execute("UPDATE snippets SET deleted=1, dirty=1, updated_at=?2 WHERE id=?1", params![id, now_ms()])?;
         Ok(())
     }
 
@@ -1102,13 +1107,36 @@ impl Db {
     /// Dictionary words and snippets (including deleted ones) changed after `since`, in the API
     /// shape. Built-in starter words are never included unless the user has made them their own.
     pub fn items_changed_since(&self, since: i64) -> DbResult<Vec<SyncItem>> {
+        self.items_query(since, false)
+    }
+
+    /// Words and snippets changed on this computer and not yet uploaded. Tracked with a flag
+    /// per row rather than a clock cursor, so a clock that jumps backwards can't hide changes.
+    pub fn items_dirty(&self) -> DbResult<Vec<SyncItem>> {
+        self.items_query(i64::MIN, true)
+    }
+
+    /// Marks uploaded items as clean. A row edited again while the upload was running (its
+    /// `updated_at` moved) stays dirty.
+    pub fn mark_items_pushed(&self, items: &[SyncItem]) -> DbResult<()> {
+        let mut conn = self.c();
+        let tx = conn.transaction()?;
+        for it in items {
+            let table = if it.kind == "snippet" { "snippets" } else { "dictionary" };
+            tx.execute(&format!("UPDATE {table} SET dirty=0 WHERE uid=?1 AND updated_at=?2"), params![it.uid, it.updated_at])?;
+        }
+        tx.commit()
+    }
+
+    fn items_query(&self, since: i64, only_dirty: bool) -> DbResult<Vec<SyncItem>> {
         let conn = self.c();
+        let dirty = only_dirty as i64;
         let mut out = Vec::new();
         let mut stmt = conn.prepare(
             "SELECT uid, word, replace_json, sounds_like_json, source, starred, keyword, updated_at, deleted
-             FROM dictionary WHERE updated_at > ?1 AND source <> 'builtin' ORDER BY updated_at",
+             FROM dictionary WHERE updated_at > ?1 AND source <> 'builtin' AND (?2=0 OR dirty=1) ORDER BY updated_at",
         )?;
-        let rows = stmt.query_map([since], |r| {
+        let rows = stmt.query_map(params![since, dirty], |r| {
             Ok(SyncItem {
                 kind: "dictionary".into(),
                 uid: r.get(0)?,
@@ -1128,8 +1156,8 @@ impl Db {
             out.push(r?);
         }
         drop(stmt);
-        let mut stmt = conn.prepare("SELECT uid, trigger, expansion, updated_at, deleted FROM snippets WHERE updated_at > ?1 ORDER BY updated_at")?;
-        let rows = stmt.query_map([since], |r| {
+        let mut stmt = conn.prepare("SELECT uid, trigger, expansion, updated_at, deleted FROM snippets WHERE updated_at > ?1 AND (?2=0 OR dirty=1) ORDER BY updated_at")?;
+        let rows = stmt.query_map(params![since, dirty], |r| {
             Ok(SyncItem {
                 kind: "snippet".into(),
                 uid: r.get(0)?,
@@ -1589,5 +1617,35 @@ mod tests {
         db.backup_to(&copy).unwrap(); // replacing an existing backup works
         let b = Db::open(&copy).unwrap();
         assert_eq!(b.dict_all().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn unpushed_changes_are_tracked_by_flag_not_by_clock() {
+        let db = Db::open_in_memory().unwrap();
+        let id = db.dict_add(&DictEntry::user("Menachem")).unwrap();
+        db.snippet_save(&Snippet { id: 0, trigger: "sig".into(), expansion: "Best".into(), uses: 0 }).unwrap();
+        let dirty = db.items_dirty().unwrap();
+        assert_eq!(dirty.len(), 2);
+        db.mark_items_pushed(&dirty).unwrap();
+        assert!(db.items_dirty().unwrap().is_empty());
+        // The computer's clock jumps back: the new edit gets an OLD timestamp, but is still sent.
+        let mut e = db.dict_all().unwrap().remove(0);
+        e.replace = vec!["x".into()];
+        db.dict_update(&e).unwrap();
+        db.c().execute("UPDATE dictionary SET updated_at=1 WHERE id=?1", [id]).unwrap();
+        assert!(db.items_changed_since(10).unwrap().iter().all(|i| i.kind != "dictionary"), "a time cursor would miss it");
+        assert_eq!(db.items_dirty().unwrap().len(), 1);
+        // An edit made while an upload was in flight stays dirty.
+        let sent = db.items_dirty().unwrap();
+        db.dict_update(&e).unwrap();
+        db.mark_items_pushed(&sent).unwrap();
+        assert_eq!(db.items_dirty().unwrap().len(), 1);
+        // Items that arrived from the account are not dirty (nothing to send back).
+        db.apply_remote_items(&[dict_item("r", "Chaya", 5, false)]).unwrap();
+        assert!(!db.items_dirty().unwrap().iter().any(|i| i.uid == "r"));
+        // Deleting marks dirty too.
+        let rid = db.dict_all().unwrap().into_iter().find(|e| e.word == "Chaya").unwrap().id;
+        db.dict_delete(rid).unwrap();
+        assert!(db.items_dirty().unwrap().iter().any(|i| i.uid == "r" && i.deleted));
     }
 }

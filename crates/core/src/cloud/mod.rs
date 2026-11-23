@@ -65,6 +65,9 @@ pub trait TokenStore: Send + Sync {
 pub trait KeyStore: Send + Sync {
     fn get(&self, provider: &str) -> Option<String>;
     fn set(&self, provider: &str, key: &str);
+    /// Keeps a copy of a key that is about to be replaced by the account's different key, so
+    /// nothing is irrecoverably lost. The app stores it as `previous-<provider>-api-key`.
+    fn keep_previous(&self, _provider: &str, _key: &str) {}
 }
 
 #[derive(Default)]
@@ -109,6 +112,9 @@ impl KeyStore for MemoryKeyStore {
         } else {
             m.insert(provider.to_string(), key.to_string());
         }
+    }
+    fn keep_previous(&self, provider: &str, key: &str) {
+        self.0.lock().unwrap().insert(format!("previous-{provider}"), key.to_string());
     }
 }
 

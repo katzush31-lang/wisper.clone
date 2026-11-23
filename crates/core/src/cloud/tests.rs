@@ -34,6 +34,9 @@ struct St {
     items: HashMap<(String, String, String), (Value, i64, bool, i64)>,
     stats: Vec<(String, String, Value, i64)>, // user, device, row, server_at
     log: Vec<String>,
+    /// Reason sent with `revoked` replies (None = like an older server that sends none).
+    revoke_reason: Option<String>,
+    settings_delay_ms: u64,
 }
 
 struct Fake {
@@ -47,6 +50,14 @@ fn json_resp(code: u16, v: Value) -> ResponseTemplate {
 
 fn err(code: u16, e: &str) -> ResponseTemplate {
     json_resp(code, json!({"error": e, "message": format!("fake {e}")}))
+}
+
+fn revoked(st: &St) -> ResponseTemplate {
+    let mut body = json!({"error": "revoked", "message": "fake revoked"});
+    if let Some(r) = &st.revoke_reason {
+        body["reason"] = json!(r);
+    }
+    json_resp(401, body)
 }
 
 fn clock() -> i64 {
@@ -87,7 +98,7 @@ fn handle(st: &Mutex<St>, req: &Request) -> ResponseTemplate {
             let d = st.devices.get_mut(&id).unwrap();
             if d.revoked || d.prev_refresh.as_deref() == Some(tok.as_str()) {
                 d.revoked = true;
-                return err(401, "revoked");
+                return revoked(&st);
             }
             let user = d.user.clone();
             return json_resp(200, auth_resp(&mut st, &id, &user));
@@ -99,7 +110,7 @@ fn handle(st: &Mutex<St>, req: &Request) -> ResponseTemplate {
     let bearer = req.headers.get("authorization").and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).unwrap_or("").to_string();
     let Some(dev) = st.access.get(&bearer).cloned() else { return err(401, "invalid") };
     if st.devices[&dev].revoked {
-        return err(401, "revoked");
+        return revoked(&st);
     }
     let user = st.devices[&dev].user.clone();
     let now = clock();
@@ -134,8 +145,9 @@ fn handle(st: &Mutex<St>, req: &Request) -> ResponseTemplate {
             ResponseTemplate::new(204)
         }
         ("GET", "/v1/settings") => {
+            let delay = std::time::Duration::from_millis(st.settings_delay_ms);
             let sections: serde_json::Map<String, Value> = st.settings.iter().filter(|((u, _), _)| *u == user).map(|((_, s), (v, t))| (s.clone(), json!({"value": v, "updated_at": t}))).collect();
-            json_resp(200, json!({"sections": sections}))
+            json_resp(200, json!({"sections": sections})).set_delay(delay)
         }
         ("PUT", "/v1/settings") => {
             for (name, sec) in body["sections"].as_object().cloned().unwrap_or_default() {
@@ -226,7 +238,8 @@ impl Fake {
     fn expire_access_tokens(&self) {
         self.st.lock().unwrap().access.clear();
     }
-    fn revoke_all_devices(&self) {
+    fn revoke_all_devices(&self, reason: Option<&str>) {
+        self.st.lock().unwrap().revoke_reason = reason.map(String::from);
         for d in self.st.lock().unwrap().devices.values_mut() {
             d.revoked = true;
         }
@@ -282,15 +295,15 @@ impl Computer {
     }
 
     async fn choose(&mut self, storage: KeyStorage) {
-        let from = self.settings.account.key_storage;
-        self.engine.set_key_storage(from, storage).await.unwrap();
-        self.edit(|s| s.account.key_storage = storage);
+        self.engine.set_key_storage(storage).await.unwrap();
+        // The app mirrors the choice into settings for the UI (it is per computer, never synced).
+        self.settings.account.key_storage = storage;
     }
 
     /// Like `set_api_key` in the app: save locally, then upload if keys live in the account.
     async fn set_key(&mut self, provider: &str, key: &str) {
         self.keys.set(provider, key);
-        self.engine.upload_key(&self.settings, provider, key).await.unwrap();
+        self.engine.upload_key(provider, key).await.unwrap();
     }
 
     fn words(&self) -> Vec<String> {
@@ -463,8 +476,8 @@ async fn sign_out_clears_cached_keys_only_for_cloud_storage() {
     a.choose(KeyStorage::Cloud).await;
     a.set_key("anthropic", KEY_A).await;
     a.db.dict_add(&DictEntry::user("Menachem")).unwrap();
-    a.engine.sign_out(KeyStorage::Cloud).await;
-    assert!(a.keys.get("anthropic").is_none());
+    a.engine.sign_out().await;
+    assert!(a.keys.get("anthropic").is_none(), "a key the account provably holds is removed");
     assert!(a.tokens.load().is_none());
     assert!(a.engine.account().is_none());
     assert_eq!(a.words(), vec!["Menachem"], "dictionary stays");
@@ -474,7 +487,7 @@ async fn sign_out_clears_cached_keys_only_for_cloud_storage() {
     l.sign_in("u2").await;
     l.choose(KeyStorage::Local).await;
     l.keys.set("openai", KEY_B);
-    l.engine.sign_out(KeyStorage::Local).await;
+    l.engine.sign_out().await;
     assert_eq!(l.keys.get("openai").as_deref(), Some(KEY_B));
 }
 
@@ -485,7 +498,7 @@ async fn a_revoked_sign_in_becomes_signed_out_and_clears_cloud_keys() {
     a.sign_in("u1").await;
     a.choose(KeyStorage::Cloud).await;
     a.set_key("anthropic", KEY_A).await;
-    fake.revoke_all_devices();
+    fake.revoke_all_devices(None); // an older server sends no reason: treated as "removed"
     fake.expire_access_tokens();
     let e = a.engine.sync(&a.settings).await.unwrap_err();
     assert_eq!(e, CloudError::Revoked);
@@ -644,11 +657,12 @@ async fn account_deletion_clears_cloud_data_and_signs_out() {
     a.sign_in("u1").await;
     a.choose(KeyStorage::Cloud).await;
     a.set_key("anthropic", KEY_A).await;
-    a.engine.delete_account(KeyStorage::Cloud).await.unwrap();
+    a.engine.delete_account().await.unwrap();
     assert!(fake.server_keys().is_empty());
     assert!(fake.st.lock().unwrap().settings.is_empty());
     assert!(a.engine.account().is_none());
-    assert!(a.keys.get("anthropic").is_none());
+    // Only the cloud copy is destroyed: this computer keeps its keys.
+    assert_eq!(a.keys.get("anthropic").as_deref(), Some(KEY_A));
 }
 
 #[tokio::test]
@@ -665,4 +679,185 @@ async fn devices_can_be_listed_and_removed() {
     // The removed computer finds out on its next sync.
     fake.expire_access_tokens();
     assert_eq!(b.engine.sync(&b.settings).await.unwrap_err(), CloudError::Revoked);
+}
+
+// ---------------------------------------------------------------- review fixes
+
+#[tokio::test]
+async fn sign_out_before_choosing_keeps_the_only_copy_of_the_keys() {
+    let fake = Fake::start().await;
+    let mut a = Computer::new(&fake.url());
+    a.keys.set("anthropic", KEY_A);
+    a.sign_in("u1").await; // storage was never chosen (default "cloud" must not count)
+    a.engine.sign_out().await;
+    assert_eq!(a.keys.get("anthropic").as_deref(), Some(KEY_A));
+}
+
+#[tokio::test]
+async fn revocation_before_choosing_keeps_keys() {
+    let fake = Fake::start().await;
+    let mut a = Computer::new(&fake.url());
+    a.keys.set("anthropic", KEY_A);
+    a.sign_in("u1").await;
+    fake.revoke_all_devices(Some("removed"));
+    fake.expire_access_tokens();
+    assert_eq!(a.engine.sync(&a.settings).await.unwrap_err(), CloudError::Revoked);
+    assert_eq!(a.keys.get("anthropic").as_deref(), Some(KEY_A));
+}
+
+#[tokio::test]
+async fn keys_that_never_reached_the_account_are_kept_on_sign_out() {
+    let fake = Fake::start().await;
+    let mut a = Computer::new(&fake.url());
+    a.sign_in("u1").await;
+    a.choose(KeyStorage::Cloud).await;
+    a.set_key("anthropic", KEY_A).await; // uploaded and recorded
+    // A key typed while offline: saved here, upload failed, so the account doesn't have it.
+    a.keys.set("openai", KEY_B);
+    a.engine.sign_out().await;
+    assert!(a.keys.get("anthropic").is_none());
+    assert_eq!(a.keys.get("openai").as_deref(), Some(KEY_B));
+    // A synced key that was edited afterwards (and not uploaded) is kept too.
+    let mut b = Computer::new(&fake.url());
+    b.sign_in("u2").await;
+    b.choose(KeyStorage::Cloud).await;
+    b.set_key("anthropic", KEY_A).await;
+    b.keys.set("anthropic", "sk-ant-edited-and-not-uploaded-yet");
+    b.engine.sign_out().await;
+    assert_eq!(b.keys.get("anthropic").as_deref(), Some("sk-ant-edited-and-not-uploaded-yet"));
+}
+
+#[tokio::test]
+async fn replayed_token_or_deleted_account_signs_out_but_keeps_keys() {
+    for reason in ["reuse", "account_deleted"] {
+        let fake = Fake::start().await;
+        let mut a = Computer::new(&fake.url());
+        a.sign_in("u1").await;
+        a.choose(KeyStorage::Cloud).await;
+        a.set_key("anthropic", KEY_A).await;
+        fake.revoke_all_devices(Some(reason));
+        fake.expire_access_tokens();
+        let e = a.engine.sync(&a.settings).await.unwrap_err();
+        assert_eq!(e, CloudError::RevokedKeepKeys, "{reason}");
+        assert!(e.needs_sign_in());
+        assert_eq!(e.message(), "Please sign in again.");
+        assert!(a.engine.account().is_none());
+        assert_eq!(a.keys.get("anthropic").as_deref(), Some(KEY_A), "{reason} keeps keys");
+    }
+    // "removed" (explicitly) clears the provably synced key.
+    let fake = Fake::start().await;
+    let mut a = Computer::new(&fake.url());
+    a.sign_in("u1").await;
+    a.choose(KeyStorage::Cloud).await;
+    a.set_key("anthropic", KEY_A).await;
+    fake.revoke_all_devices(Some("removed"));
+    fake.expire_access_tokens();
+    assert_eq!(a.engine.sync(&a.settings).await.unwrap_err(), CloudError::Revoked);
+    assert!(a.keys.get("anthropic").is_none());
+}
+
+#[tokio::test]
+async fn a_stale_cloud_snapshot_cannot_reupload_keys_after_switching_to_local() {
+    let fake = Fake::start().await;
+    let mut a = Computer::new(&fake.url());
+    a.sign_in("u1").await;
+    a.choose(KeyStorage::Cloud).await;
+    a.set_key("anthropic", KEY_A).await;
+    let stale = a.settings.clone(); // a sync that read settings before the switch
+    assert_eq!(stale.account.key_storage, KeyStorage::Cloud);
+    // The switch and a key save race; whichever runs first, the account ends up without keys.
+    let (switched, uploaded) = tokio::join!(a.engine.set_key_storage(KeyStorage::Local), a.engine.upload_key("openai", KEY_B));
+    switched.unwrap();
+    uploaded.unwrap();
+    assert!(fake.server_keys().is_empty());
+    // Later work that still carries the stale Cloud snapshot is ignored too.
+    let puts = fake.calls("PUT /v1/keys/anthropic") + fake.calls("PUT /v1/keys/openai");
+    a.engine.sync(&stale).await.unwrap();
+    a.engine.upload_key("anthropic", KEY_A).await.unwrap();
+    assert!(fake.server_keys().is_empty());
+    assert_eq!(fake.calls("PUT /v1/keys/anthropic") + fake.calls("PUT /v1/keys/openai"), puts);
+}
+
+#[tokio::test]
+async fn key_storage_is_per_computer_and_never_synced() {
+    let fake = Fake::start().await;
+    let (mut a, mut b) = (Computer::new(&fake.url()), Computer::new(&fake.url()));
+    a.sign_in("u1").await;
+    a.choose(KeyStorage::Local).await;
+    a.edit(|s| s.user_name = "Sarah".into());
+    a.sync().await;
+    b.sign_in("u1").await;
+    b.choose(KeyStorage::Cloud).await;
+    b.sync().await;
+    assert_eq!(b.settings.user_name, "Sarah");
+    assert_eq!(b.settings.account.key_storage, KeyStorage::Cloud);
+    assert_eq!(b.engine.key_storage(), Some(KeyStorage::Cloud));
+    assert_eq!(a.engine.key_storage(), Some(KeyStorage::Local));
+    assert!(!fake.st.lock().unwrap().settings.keys().any(|(_, name)| name.contains("keyStorage")));
+}
+
+#[tokio::test]
+async fn sign_out_waits_for_a_sync_in_progress() {
+    let fake = Fake::start().await;
+    let mut a = Computer::new(&fake.url());
+    a.sign_in("u1").await;
+    fake.st.lock().unwrap().settings_delay_ms = 400;
+    let (engine, settings) = (a.engine.clone(), a.settings.clone());
+    let running = tokio::spawn(async move { engine.sync(&settings).await });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    a.engine.sign_out().await;
+    // The sync had to finish first, so it can't write its bookkeeping back afterwards.
+    assert!(running.is_finished());
+    assert!(a.engine.last_sync().is_none());
+    assert!(a.engine.account().is_none());
+}
+
+#[tokio::test]
+async fn a_different_account_gets_a_fresh_timestamped_backup() {
+    let fake = Fake::start().await;
+    let mut a = Computer::new(&fake.url());
+    a.edit(|s| s.user_name = "Before first account".into());
+    a.sign_in("u1").await;
+    a.engine.sign_out().await;
+    a.edit(|s| s.user_name = "Before second account".into());
+    a.sign_in("u2").await;
+    let names: Vec<String> = std::fs::read_dir(a.dir.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    let settings_backups: Vec<_> = names.iter().filter(|n| n.starts_with("settings.before-signin") && n.ends_with(".json")).collect();
+    assert_eq!(settings_backups.len(), 2, "{names:?}");
+    assert_eq!(names.iter().filter(|n| n.starts_with("wisper.before-signin") && n.ends_with(".db")).count(), 2);
+    let first: Settings = serde_json::from_slice(&std::fs::read(a.dir.path().join("settings.before-signin.json")).unwrap()).unwrap();
+    assert_eq!(first.user_name, "Before first account");
+    let newer = settings_backups.iter().find(|n| **n != "settings.before-signin.json").unwrap();
+    let second: Settings = serde_json::from_slice(&std::fs::read(a.dir.path().join(newer)).unwrap()).unwrap();
+    assert_eq!(second.user_name, "Before second account");
+    // Signing the same account in again later does not make yet another copy.
+    a.engine.sign_out().await;
+    a.sign_in("u2").await;
+    assert_eq!(std::fs::read_dir(a.dir.path()).unwrap().count(), names.len());
+}
+
+#[tokio::test]
+async fn first_choice_keeps_the_replaced_local_key_as_previous() {
+    let fake = Fake::start().await;
+    let (mut a, mut b) = (Computer::new(&fake.url()), Computer::new(&fake.url()));
+    a.sign_in("u1").await;
+    a.choose(KeyStorage::Cloud).await;
+    a.set_key("anthropic", KEY_A).await;
+    b.keys.set("anthropic", KEY_B); // a different key already on this computer
+    b.sign_in("u1").await;
+    b.choose(KeyStorage::Cloud).await;
+    assert_eq!(b.keys.get("anthropic").as_deref(), Some(KEY_A), "the account's key is used");
+    assert_eq!(b.keys.get("previous-anthropic").as_deref(), Some(KEY_B), "the replaced key is not lost");
+}
+
+#[tokio::test]
+async fn uploaded_items_are_marked_clean() {
+    let fake = Fake::start().await;
+    let mut a = Computer::new(&fake.url());
+    a.sign_in("u1").await;
+    a.db.dict_add(&DictEntry::user("Menachem")).unwrap();
+    assert_eq!(a.db.items_dirty().unwrap().len(), 1);
+    a.sync().await;
+    assert!(a.db.items_dirty().unwrap().is_empty());
+    assert_eq!(fake.st.lock().unwrap().items.len(), 1);
 }

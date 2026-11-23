@@ -245,15 +245,15 @@ impl Computer {
     }
 
     async fn choose(&mut self, storage: KeyStorage) {
-        let from = self.settings.account.key_storage;
-        self.engine.set_key_storage(from, storage).await.expect("choose key storage");
-        self.edit(|s| s.account.key_storage = storage);
+        self.engine.set_key_storage(storage).await.expect("choose key storage");
+        // The app mirrors the (per-computer, never synced) choice into settings for the UI.
+        self.settings.account.key_storage = storage;
     }
 
     /// Like `set_api_key` in the app: save locally, then upload if keys live in the account.
     async fn set_key(&mut self, provider: &str, key: &str) {
         self.keys.set(provider, key);
-        self.engine.upload_key(&self.settings, provider, key).await.expect("upload key");
+        self.engine.upload_key(provider, key).await.expect("upload key");
     }
 
     fn words(&self) -> Vec<String> {
@@ -707,10 +707,10 @@ async fn s08_refresh_tokens_rotate_and_replay_revokes_the_device() {
     stale_store.save(&rotated).unwrap();
     let stale = CloudClient::new(&base, stale_store.clone());
     spend_auth_calls(1).await;
-    assert_eq!(stale.get_keys().await.unwrap_err(), CloudError::Revoked);
+    assert!(matches!(stale.get_keys().await.unwrap_err(), CloudError::Revoked | CloudError::RevokedKeepKeys));
     assert!(stale_store.load().is_none(), "a revoked sign-in is forgotten on that computer");
     assert_eq!(count("SELECT revoked FROM devices WHERE id = ?", &[&device_id(slot, 'b')]), 1);
-    assert_eq!(thief.get_keys().await.unwrap_err(), CloudError::Revoked, "the thief's token is dead too");
+    assert!(matches!(thief.get_keys().await.unwrap_err(), CloudError::Revoked | CloudError::RevokedKeepKeys), "the thief's token is dead too");
 }
 
 #[tokio::test]
@@ -819,7 +819,7 @@ async fn s10_sign_out_revokes_the_device() {
     a.sync().await;
     let last_refresh = a.tokens.load().unwrap();
     spend_auth_calls(1).await; // logout is under /auth/*
-    a.engine.sign_out(KeyStorage::Cloud).await;
+    a.engine.sign_out().await;
 
     // Locally: signed out, cached cloud keys gone, dictionary stays.
     assert!(a.engine.account().is_none());
@@ -850,7 +850,7 @@ async fn s10_sign_out_revokes_the_device() {
     c.set_key("openai", KEY_OPENAI).await;
     c.db.dict_add(&DictEntry::user("Gone")).unwrap();
     c.sync().await;
-    c.engine.delete_account(KeyStorage::Cloud).await.unwrap();
+    c.engine.delete_account().await.unwrap();
     for t in ["settings", "items", "stats", "api_keys"] {
         assert_eq!(count(&format!("SELECT COUNT(*) FROM {t} WHERE user_id = ?"), &[&user_id(12)]), 0, "{t} rows remain after account deletion");
     }
