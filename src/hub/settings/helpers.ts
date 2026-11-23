@@ -110,6 +110,21 @@ export const DEFAULT_HOTKEYS: HotkeyConfig = {
   openScratchpad: k(WIN, ALT, 0x53),
 };
 
-export function setCombo(hotkeys: HotkeyConfig, action: keyof HotkeyConfig, keys: number[]): HotkeyConfig {
-  return { ...hotkeys, [action]: [{ keys }] };
+export function setCombo(hotkeys: HotkeyConfig, action: keyof HotkeyConfig, keys: number[], doubleClick = false): HotkeyConfig {
+  return { ...hotkeys, [action]: [doubleClick ? { keys, doubleClick: true } : { keys }] };
+}
+
+/** Browser mouse button (MouseEvent.button) → Windows button code; null for unknown buttons. */
+export function mouseButtonToVk(button: number): number | null {
+  return ({ 0: 0x01, 1: 0x04, 2: 0x02, 3: 0x05, 4: 0x06 } as Record<number, number>)[button] ?? null;
+}
+
+/** What double-click means for a shortcut that is a single mouse button: "forced" (the middle
+ *  button: a single middle click must keep working in apps), "optional" (side buttons), or
+ *  "none" (not a lone mouse button). */
+export function doubleClickChoice(keys: number[]): "forced" | "optional" | "none" {
+  if (keys.length !== 1) return "none";
+  if (keys[0] === 0x04) return "forced";
+  if (keys[0] === 0x05 || keys[0] === 0x06) return "optional";
+  return "none";
 }

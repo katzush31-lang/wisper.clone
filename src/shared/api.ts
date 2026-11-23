@@ -6,6 +6,8 @@ import { call, listen } from "./tauri";
 
 export interface KeyCombo {
   keys: number[];
+  /** Only for a mouse button on its own: double-click it to start (single clicks keep working). */
+  doubleClick?: boolean;
 }
 
 export interface HotkeyConfig {
@@ -410,7 +412,8 @@ export const api = {
   barHitArea: (area: { x: number; y: number; width: number; height: number } | null) => call<void>("bar_hit_area", { area }),
   startHotkeyCapture: () => call<void>("start_hotkey_capture"),
   stopHotkeyCapture: () => call<void>("stop_hotkey_capture"),
-  describeCombo: (keys: number[]) => call<{ label: string; error: string | null }>("describe_combo", { keys }),
+  describeCombo: (keys: number[], doubleClick = false) =>
+    call<{ label: string; error: string | null }>("describe_combo", { keys, doubleClick }),
 
   listNotes: (search?: string) => call<Note[]>("list_notes", { search }),
   saveNote: (note: Note) => call<number>("save_note", { note }),
@@ -487,28 +490,47 @@ const KEY_NAMES: Record<number, string> = {
   0x09: "Tab",
   0x08: "Backspace",
   0x14: "Caps Lock",
-  0x04: "Middle mouse",
-  0x05: "Mouse 4",
-  0x06: "Mouse 5",
+  0x01: "Left click",
+  0x02: "Right click",
+  0x04: "Middle click",
+  0x05: "Back button",
+  0x06: "Forward button",
   0x25: "Left",
   0x26: "Up",
   0x27: "Right",
   0x28: "Down",
 };
 
-/** "Ctrl + Win + Space" — same ordering as the Rust side. */
-export function comboLabel(combo: KeyCombo | null | undefined): string {
-  if (!combo || combo.keys.length === 0) return "Not set";
+/** Mouse button codes (Windows' own: left, right, middle, back, forward). */
+export const MOUSE_BUTTONS = [0x01, 0x02, 0x04, 0x05, 0x06];
+
+/** The button, if this shortcut is a double-click of a mouse button on its own (the middle
+ *  button on its own always is). Same rule as the Rust side. */
+export function clickButton(combo: KeyCombo): number | null {
+  if (combo.keys.length !== 1) return null;
+  const b = combo.keys[0];
+  return b === 0x04 || ((b === 0x05 || b === 0x06) && combo.doubleClick) ? b : null;
+}
+
+/** Key cap names, modifiers first: ["Ctrl", "Win", "Space"] or ["Double-click", "Middle click"]. */
+export function comboKeyNames(combo: KeyCombo | null | undefined): string[] {
+  if (!combo || combo.keys.length === 0) return [];
   const order = (k: number) => ({ 0x11: 0, 0x5b: 1, 0x12: 2, 0x10: 3 })[k] ?? 4;
-  return [...combo.keys]
+  const names = [...combo.keys]
     .sort((a, b) => order(a) - order(b) || a - b)
     .map((k) => {
       if (KEY_NAMES[k]) return KEY_NAMES[k];
       if (k >= 0x70 && k <= 0x87) return `F${k - 0x6f}`;
       if ((k >= 0x30 && k <= 0x39) || (k >= 0x41 && k <= 0x5a)) return String.fromCharCode(k);
       return `Key ${k}`;
-    })
-    .join(" + ");
+    });
+  return clickButton(combo) !== null ? ["Double-click", ...names] : names;
+}
+
+/** "Ctrl + Win + Space" — same ordering as the Rust side. */
+export function comboLabel(combo: KeyCombo | null | undefined): string {
+  const names = comboKeyNames(combo);
+  return names.length === 0 ? "Not set" : names.join(" + ");
 }
 
 export function formatDuration(ms: number): string {

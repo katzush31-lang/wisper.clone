@@ -103,6 +103,9 @@ pub struct Controller {
     next_token: AtomicU64,
     /// The microphone session of a running Settings mic test.
     pub mic_test: Mutex<Option<u64>>,
+    /// Bar updates go to their own thread: resizing/showing the bar waits for the UI thread,
+    /// and the hotkey pump must never wait for that (or a busy UI would delay start/stop).
+    bar_tx: Sender<BarState>,
 }
 
 const UNDO_WINDOW: Duration = Duration::from_secs(2 * 60);
@@ -115,6 +118,18 @@ fn is_terminal(exe: &str) -> bool {
 
 impl Controller {
     pub fn new(app: AppHandle, engine: Arc<Engine>, hook: Arc<HookShared>, capture: Capture, data_dir: PathBuf) -> Arc<Self> {
+        let (bar_tx, bar_rx) = channel::<BarState>();
+        {
+            let app = app.clone();
+            std::thread::Builder::new()
+                .name("wisper-bar".into())
+                .spawn(move || {
+                    for st in bar_rx {
+                        bar::emit(&app, &st);
+                    }
+                })
+                .expect("spawn bar thread");
+        }
         Arc::new(Self {
             app,
             engine,
@@ -130,6 +145,7 @@ impl Controller {
             dictations_since_suggest: AtomicU64::new(0),
             next_token: AtomicU64::new(1),
             mic_test: Mutex::new(None),
+            bar_tx,
         })
     }
 
@@ -164,7 +180,7 @@ impl Controller {
     /// was shown in the meantime.
     pub fn show_bar(self: &Arc<Self>, state: BarState, hide_after: Option<Duration>) {
         let gen = self.bar_generation.fetch_add(1, Ordering::SeqCst) + 1;
-        bar::emit(&self.app, &state);
+        self.emit_bar(&state);
         *self.last_bar.lock() = Some(state);
         if let Some(d) = hide_after {
             let me = self.clone();
@@ -172,11 +188,13 @@ impl Controller {
                 std::thread::sleep(d);
                 if me.bar_generation.load(Ordering::SeqCst) == gen {
                     let processing = matches!(*me.phase.lock(), Phase::Processing { .. });
-                    match (processing, me.last_progress.lock().clone()) {
+                    // Copy it out first: no lock may be held while the bar is updated.
+                    let progress = me.last_progress.lock().clone();
+                    match (processing, progress) {
                         // A brief message shown mid-processing hands the bar back to progress.
                         (true, Some(p)) => {
                             me.bar_generation.fetch_add(1, Ordering::SeqCst);
-                            bar::emit(&me.app, &p);
+                            me.emit_bar(&p);
                         }
                         _ => me.rest_bar(),
                     }
@@ -194,8 +212,13 @@ impl Controller {
         bar::set_top(s.bar_position == wisper_core::settings::BarPosition::Top);
         let st = if s.always_show_bar { self.bar("idle") } else { self.bar("hidden") };
         self.bar_generation.fetch_add(1, Ordering::SeqCst);
-        bar::emit(&self.app, &st);
+        self.emit_bar(&st);
         *self.last_bar.lock() = Some(st);
+    }
+
+    /// Queues a bar update (never waits for the UI thread).
+    fn emit_bar(&self, st: &BarState) {
+        let _ = self.bar_tx.send(st.clone());
     }
 
     fn modes_for_bar(&self) -> Vec<ModeRef> {
@@ -232,6 +255,7 @@ impl Controller {
             }
             Action::OneShot(s) => self.one_shot(s),
             Action::SuppressStartMenu => {}
+            Action::Ignored(why) => tracing::info!("shortcut press ignored: {why}"),
         }
     }
 
@@ -257,9 +281,13 @@ impl Controller {
             let phase = self.phase.lock();
             match &*phase {
                 Phase::Idle => {}
-                Phase::Recording(_) => return,
+                Phase::Recording(_) => {
+                    tracing::info!("start ignored: already recording");
+                    return;
+                }
                 Phase::Processing { .. } => {
                     drop(phase);
+                    tracing::info!("start ignored: still processing the last dictation");
                     self.on_action(Action::Busy);
                     return;
                 }
@@ -415,6 +443,8 @@ impl Controller {
         let mut level = 0.0f32;
         let mut peak = 0.0f32;
         let mut warned_silent = false;
+        let mut admin_checked = Instant::now() - Duration::from_secs(1);
+        let mut admin_in_front = false;
         loop {
             match rx.recv_timeout(Duration::from_millis(30)) {
                 Ok(RecMsg::Audio(chunk)) => {
@@ -453,6 +483,19 @@ impl Controller {
                 if warned_silent && peak < 0.02 {
                     st.message = Some("No sound from the microphone. Is it muted?".into());
                 }
+                // Windows hides keys from Wisper while an app running as administrator has focus,
+                // so the shortcut can't stop the recording then: say so, and offer the ✓ button.
+                if admin_checked.elapsed() >= Duration::from_millis(500) {
+                    admin_checked = Instant::now();
+                    let now_admin = platform::admin_window_in_front();
+                    if now_admin != admin_in_front {
+                        tracing::info!("admin window in front while recording: {now_admin}");
+                        admin_in_front = now_admin;
+                    }
+                }
+                if admin_in_front {
+                    st.message = Some("An admin app is in front, so your shortcut can't reach Wisper. Click ✓ here, or click another window first.".into());
+                }
                 if let Some(err) = self.capture.take_error() {
                     st.message = Some(format!("Microphone problem: {err}"));
                 }
@@ -477,7 +520,10 @@ impl Controller {
                 }
             }
         };
-        let Some((rec, cancelled, token)) = rec else { return };
+        let Some((rec, cancelled, token)) = rec else {
+            tracing::info!("finish ignored: not recording");
+            return;
+        };
         self.hook.engine.lock().set_processing(true);
         let settings = self.settings();
         let mut st = self.bar("processing").msg("Transcribing…");
@@ -1118,47 +1164,73 @@ impl Controller {
         });
     }
 
-    /// Drives the gesture engine's timers (single tap → cancel) and keeps modifier state
-    /// honest if a key-up was missed.
+    /// Drives the gesture engine's timers (single tap → cancel), keeps its idea of which keys
+    /// are held honest when a key-up was missed, and carries out the shortcuts' actions.
     pub fn spawn_hotkey_pump(self: &Arc<Self>, rx: Receiver<platform::HookEvent>) {
         let me = self.clone();
         std::thread::Builder::new()
             .name("wisper-hotkeys".into())
             .spawn(move || {
                 let mut last_sync = Instant::now();
+                let mut lock_misses = 0u64;
                 loop {
+                    let mut actions = Vec::new();
                     match rx.recv_timeout(Duration::from_millis(25)) {
-                        // Shortcuts switched off: queued shortcut actions are dropped.
-                        Ok(platform::HookEvent::Action(a)) => {
-                            if !me.hook.paused.load(Ordering::SeqCst) {
-                                me.on_action(a)
-                            }
-                        }
+                        Ok(platform::HookEvent::Action(a)) => actions.push(a),
                         Ok(platform::HookEvent::Captured { keys, done }) => {
                             let label = wisper_core::hotkey::KeyCombo::new(&keys).label();
                             let _ = me.app.emit_to("main", "hotkey-captured", serde_json::json!({ "keys": keys, "label": label, "done": done }));
+                        }
+                        Ok(platform::HookEvent::BlockedByAdminWindow) => {
+                            // While recording, the bar already says this (see `recorder`).
+                            if me.is_idle() && !me.hook.paused.load(Ordering::SeqCst) {
+                                me.show_bar(
+                                    me.bar("notice")
+                                        .msg("Wisper can't see your keys right now")
+                                        .detail("The app in front is running as administrator, and Windows hides your typing from other apps while it has focus. Click another window, then use your shortcut."),
+                                    Some(Duration::from_secs(6)),
+                                );
+                            }
                         }
                         Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => return,
                     }
                     let now = now_ms();
-                    let actions = {
+                    {
                         let mut e = me.hook.engine.lock();
                         if e.next_deadline().map(|d| now >= d).unwrap_or(false) {
-                            e.tick(now)
-                        } else {
-                            Vec::new()
-                        }
-                    };
-                    if !me.hook.paused.load(Ordering::SeqCst) {
-                        for a in actions {
-                            me.on_action(a);
+                            actions.extend(e.tick(now));
                         }
                     }
-                    if last_sync.elapsed() > Duration::from_secs(2) {
+                    // Missed key-ups (focus moved to an admin window, the lock screen, a gap
+                    // in the hook) would otherwise leave a shortcut half-pressed, so its next
+                    // press is ignored. The OS knows which keys are really held.
+                    if last_sync.elapsed() >= Duration::from_millis(500) {
                         last_sync = Instant::now();
-                        let down = platform::modifiers_down();
-                        me.hook.engine.lock().sync_modifiers(&down);
+                        // Ask the OS without holding the engine's lock (the hook needs it).
+                        let mut held: Vec<u32> = me.hook.engine.lock().pressed_keys();
+                        held.extend(wisper_core::hotkey::vk::MODIFIERS);
+                        held.retain(|&k| platform::os_key_down(k));
+                        let fixed = me.hook.engine.lock().sync_keys(&|k| held.contains(&k), now);
+                        if !fixed.is_empty() {
+                            tracing::info!("shortcut keys were released without Wisper seeing it; recovered: {fixed:?}");
+                        }
+                        actions.extend(fixed);
+                        let misses = me.hook.lock_misses.load(Ordering::Relaxed);
+                        if misses != lock_misses {
+                            tracing::warn!("keyboard hook let {} key events through unprocessed (engine busy)", misses - lock_misses);
+                            lock_misses = misses;
+                        }
+                    }
+                    // Shortcuts switched off: queued shortcut actions are dropped.
+                    if me.hook.paused.load(Ordering::SeqCst) {
+                        continue;
+                    }
+                    for a in actions {
+                        if !matches!(a, Action::SuppressStartMenu | Action::Ignored(_) | Action::BecameCommand) {
+                            tracing::info!("shortcut: {a:?}");
+                        }
+                        me.on_action(a);
                     }
                 }
             })

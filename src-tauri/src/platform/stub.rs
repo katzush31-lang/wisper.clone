@@ -9,8 +9,11 @@ use wisper_core::sounds::Sound;
 pub fn set_owner_hwnd(_hwnd: isize) {}
 pub fn start_hook(_shared: Arc<HookShared>) {}
 pub fn refresh_hooks() {}
-pub fn modifiers_down() -> Vec<u32> {
-    Vec::new()
+pub fn os_key_down(_code: u32) -> bool {
+    false
+}
+pub fn admin_window_in_front() -> bool {
+    false
 }
 pub fn foreground_app() -> (String, String) {
     (String::new(), String::new())

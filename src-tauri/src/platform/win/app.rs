@@ -72,12 +72,14 @@ pub fn refocus(target: isize) {
     }
 }
 
-fn process_elevated(h: windows::Win32::Foundation::HANDLE) -> Option<bool> {
+/// Whether a process runs elevated. `Err(())` when its token can't be read: a normal process
+/// isn't allowed to read the token of one running as administrator.
+fn process_elevated(h: windows::Win32::Foundation::HANDLE) -> Result<bool, ()> {
     use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
     use windows::Win32::System::Threading::OpenProcessToken;
     unsafe {
         let mut token = windows::Win32::Foundation::HANDLE::default();
-        OpenProcessToken(h, TOKEN_QUERY, &mut token).ok()?;
+        OpenProcessToken(h, TOKEN_QUERY, &mut token).map_err(|_| ())?;
         let mut elev = TOKEN_ELEVATION::default();
         let mut len = 0u32;
         let ok = GetTokenInformation(
@@ -89,15 +91,21 @@ fn process_elevated(h: windows::Win32::Foundation::HANDLE) -> Option<bool> {
         )
         .is_ok();
         let _ = CloseHandle(token);
-        ok.then_some(elev.TokenIsElevated != 0)
+        if ok {
+            Ok(elev.TokenIsElevated != 0)
+        } else {
+            Err(())
+        }
     }
 }
 
 pub fn we_are_elevated() -> bool {
-    unsafe { process_elevated(windows::Win32::System::Threading::GetCurrentProcess()).unwrap_or(false) }
+    static ELEVATED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ELEVATED.get_or_init(|| unsafe { process_elevated(windows::Win32::System::Threading::GetCurrentProcess()).unwrap_or(false) })
 }
 
-/// Whether the focused app runs as administrator. If we can't tell, assume not and try the paste.
+/// Whether the focused app runs as administrator (or at least above Wisper: we're not even
+/// allowed to look at its token). If there's nothing in front or it's Wisper, no.
 pub fn foreground_is_elevated() -> bool {
     unsafe {
         let hwnd = GetForegroundWindow();
@@ -106,12 +114,22 @@ pub fn foreground_is_elevated() -> bool {
         }
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        if pid == 0 {
+        if pid == 0 || pid == GetCurrentProcessId() {
             return false;
         }
-        let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return false };
+        let h = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(h) => h,
+            Err(e) => return e.code() == windows::Win32::Foundation::E_ACCESSDENIED,
+        };
         let r = process_elevated(h);
         let _ = CloseHandle(h);
-        r.unwrap_or(false)
+        // Token unreadable: it runs above us (as administrator); reading our own user's apps works.
+        r.unwrap_or(true)
     }
+}
+
+/// The window in front runs as administrator and Wisper doesn't, so Windows hides keyboard
+/// input from Wisper's hooks and blocks pasting into it (User Interface Privilege Isolation).
+pub fn admin_window_in_front() -> bool {
+    !we_are_elevated() && foreground_is_elevated()
 }

@@ -83,15 +83,17 @@ pub fn apply_settings(app: &AppHandle, s: &Settings) {
     // unrelated settings (e.g. from a sync) can't reset a push-to-talk key that is being held.
     static SHORTCUTS_CONFIGURED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if old.shortcuts_differ(s) || !SHORTCUTS_CONFIGURED.swap(true, Ordering::SeqCst) {
+        let extra: Vec<(OneShot, KeyCombo)> = s
+            .transforms
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| t.hotkey.clone().map(|k| (OneShot::Transform(i as u8), k)))
+            .collect();
+        let config = s.hotkeys.clone();
+        // Only quick memory work while holding the lock the keyboard hook needs.
         let mut e = c.hook.engine.lock();
-        e.set_config(s.hotkeys.clone());
-        e.set_extra(
-            s.transforms
-                .iter()
-                .enumerate()
-                .filter_map(|(i, t)| t.hotkey.clone().map(|k| (OneShot::Transform(i as u8), k)))
-                .collect(),
-        );
+        e.set_config(config);
+        e.set_extra(extra);
     }
     // "Shortcuts enabled" switch: the hook keeps running but ignores every shortcut.
     let disabled = !s.shortcuts_enabled;
@@ -105,8 +107,10 @@ pub fn apply_settings(app: &AppHandle, s: &Settings) {
         e.clear_pressed();
     }
     crate::tray::sync_shortcuts(app, s.shortcuts_enabled);
-    let uses_mouse = all_combos(s).iter().any(|c| c.keys.iter().any(|k| matches!(*k, 0x04..=0x06)));
-    if c.hook.mouse_enabled.swap(uses_mouse, Ordering::SeqCst) != uses_mouse {
+    // The mouse hook is installed only while a shortcut uses a mouse button.
+    let mask = wisper_core::hotkey::mouse_button_mask(all_combos(s).iter());
+    let was = c.hook.mouse_buttons.swap(mask, Ordering::SeqCst);
+    if (was != 0) != (mask != 0) {
         platform::refresh_hooks();
     }
     if old.launch_at_login != s.launch_at_login {
@@ -612,11 +616,14 @@ pub fn bar_hit_area(app: AppHandle, area: Option<crate::bar::HitArea>) {
 #[tauri::command]
 pub fn start_hotkey_capture(app: AppHandle) {
     ctl(&app).hook.start_capture();
+    // Mouse buttons can be recorded too, so the mouse hook is needed while recording.
+    platform::refresh_hooks();
 }
 
 #[tauri::command]
 pub fn stop_hotkey_capture(app: AppHandle) {
     ctl(&app).hook.stop_capture();
+    platform::refresh_hooks();
 }
 
 #[derive(Serialize)]
@@ -626,8 +633,9 @@ pub struct ComboDescription {
 }
 
 #[tauri::command]
-pub fn describe_combo(keys: Vec<u32>) -> ComboDescription {
-    let c = KeyCombo::new(&keys);
+pub fn describe_combo(keys: Vec<u32>, double_click: Option<bool>) -> ComboDescription {
+    let mut c = KeyCombo::new(&keys);
+    c.double_click = double_click.unwrap_or(false);
     ComboDescription { label: c.label(), error: c.validate().err() }
 }
 

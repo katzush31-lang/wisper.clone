@@ -37,6 +37,13 @@ Source: docs.wisprflow.ai (all desktop articles read 22 Nov 2026), reviews, /ref
 - One-click undo / re-run in another mode from the bar.
 - Per-step timings recorded in history, so speed problems are visible, not guessed.
 
+### Shortcuts: always on, and mouse buttons (2026-11-23)
+- Start and stop never depend on focus or a text box. With no text box at the end, the text goes to History and the bar offers Copy.
+- The keyboard hook's callback only does memory work (bounded 30 ms lock wait); `SendInput` for the Start-menu mask key runs on its own thread, because it runs every other app's hooks before returning and a slow callback makes Windows silently remove the hook. A raw-input watchdog re-installs the hook the moment a key reaches Windows but not the hook; plus a refresh every 2 minutes.
+- Missed key-ups/downs (admin window, lock screen, hook gap) are repaired from the OS key state before each key press and every 0.5 s (`GestureEngine::sync_keys`), so a half-pressed shortcut can't swallow the next press.
+- Windows hides keys from a normal app while an app running as administrator (Task Manager, installers) has focus. Nothing can fix that short of running Wisper as administrator; the bar explains it and the ✓ button still finishes.
+- Mouse: middle and side buttons on their own, or any button with Ctrl/Alt/Shift/Win (left/right only with one; Ctrl/Shift + left click are reserved). A button on its own is a double-click shortcut (always for the middle button, optional for side buttons): single clicks keep working, double-click starts hands-free, one click while recording finishes (that click and the second click of a double-click stop never reach the app). Trade-off: the first click of the double-click does reach the app, and there is no hold-to-talk for a button on its own (the press has already gone to the app, which would auto-scroll/drag, and every normal click would switch the microphone on). Hold-to-talk with a mouse = Ctrl + the button, or a side button set to single press (it then stops going Back/Forward).
+
 ## 2. Tech stack
 **Tauri 2** — Rust back end + React/TypeScript UI rendered by Windows' built-in WebView2.
 - Installer ~10 MB (NSIS, per-user, no admin prompt). WebView2 ships with Windows 10/11; the installer embeds its bootstrapper for the rare PC without it. Static C runtime, so no Visual C++ redistributable needed.

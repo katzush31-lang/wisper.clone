@@ -82,3 +82,16 @@ Tick these off after installing. If something doesn't behave as described, note 
 - [ ] Insights shows a Speed card after 3 dictations.
 - [ ] Turn Wi-Fi off mid-dictation, then on, then finish: the dictation still completes (from the saved recording).
 - [ ] Optional: turn on "Skip the AI for tiny dictations", say "Sounds good." — History shows "tidied on this computer".
+
+## 11. Shortcuts anywhere and mouse shortcuts
+- [ ] Click the desktop (no text box), hold Ctrl + Win, speak, let go: it records, and the bar says "No text box was selected" with Copy. The text is in History.
+- [ ] Double-tap Ctrl + Win in a text box, speak, click around other windows and the desktop, then tap Ctrl + Win once: it stops every time.
+- [ ] Same with the Start menu open, and with Search open (Win + S): start and stop both work, and the Start menu doesn't pop up.
+- [ ] Open Task Manager (it runs as administrator), click into it and press Ctrl + Win: the bar explains that Windows hides your keys from Wisper there. While recording with Task Manager in front, the bar says so and ✓ finishes.
+- [ ] Settings → Shortcuts → Dictate → Change, click the scroll wheel: it shows "Double-click" "Middle click". Save.
+- [ ] Middle-click a link in the browser: it still opens in a new tab (normal clicks unaffected).
+- [ ] Double-click the scroll wheel on an empty spot, speak, click it once: it stops and pastes (or goes to History if no text box). The finishing click doesn't open or scroll anything.
+- [ ] Set a side button (Back) with Double-click on: single Back still goes back in the browser; double-click starts. Turn Double-click off: hold the button to talk.
+- [ ] Hold Ctrl and click the scroll wheel as a shortcut: hold Ctrl + wheel to talk, let go to paste.
+- [ ] Try to save just the left mouse button: it explains it needs Ctrl, Alt, Shift or Win.
+- [ ] After a week of use, if a shortcut ever does nothing, send the log file (Settings → open data folder → logs): it now records hook re-installs and ignored presses (never your words).

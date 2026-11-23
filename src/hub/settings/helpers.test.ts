@@ -9,6 +9,8 @@ import {
   retentionFromString,
   retentionToString,
   setCombo,
+  mouseButtonToVk,
+  doubleClickChoice,
   withCurrent,
 } from "./helpers";
 
@@ -49,5 +51,22 @@ describe("misc helpers", () => {
     const next = setCombo(DEFAULT_HOTKEYS, "dictate", [0x11, 0x20]);
     expect(next.dictate).toEqual([{ keys: [0x11, 0x20] }]);
     expect(DEFAULT_HOTKEYS.dictate).toEqual([{ keys: [0x11, 0x5b] }]);
+  });
+  it("saves double-click mouse shortcuts with the flag", () => {
+    expect(setCombo(DEFAULT_HOTKEYS, "dictate", [0x04], true).dictate).toEqual([{ keys: [0x04], doubleClick: true }]);
+  });
+  it("maps browser mouse buttons to Windows codes", () => {
+    expect(mouseButtonToVk(1)).toBe(0x04);
+    expect(mouseButtonToVk(3)).toBe(0x05);
+    expect(mouseButtonToVk(4)).toBe(0x06);
+    expect(mouseButtonToVk(0)).toBe(0x01);
+    expect(mouseButtonToVk(2)).toBe(0x02);
+    expect(mouseButtonToVk(7)).toBeNull();
+  });
+  it("offers double-click only for a lone mouse button", () => {
+    expect(doubleClickChoice([0x04])).toBe("forced");
+    expect(doubleClickChoice([0x05])).toBe("optional");
+    expect(doubleClickChoice([0x11, 0x04])).toBe("none");
+    expect(doubleClickChoice([0x70])).toBe("none");
   });
 });
