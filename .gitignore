@@ -6,3 +6,4 @@ target/
 src-tauri/gen/
 .env
 *.key
+.claude/worktrees/
