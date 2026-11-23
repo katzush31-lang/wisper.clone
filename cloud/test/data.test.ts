@@ -264,7 +264,7 @@ describe("delete account", () => {
     await app.call("/v1/account", { method: "DELETE", token: first.access });
     const again = await app.signIn({ sub: "a", email: "a@example.com" });
     expect(again.userId).not.toBe(first.userId);
-    expect(await jsonOf(await app.call("/v1/keys", { token: again.access }))).toEqual({ openai: null, anthropic: null });
+    expect(await jsonOf(await app.call("/v1/keys", { token: again.access }))).toEqual({ openai: null, anthropic: null, removed_at: null });
   });
 });
 

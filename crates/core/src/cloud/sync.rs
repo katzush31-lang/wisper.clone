@@ -25,6 +25,9 @@ const META_USER: &str = "cloud_user";
 const META_MERGED: &str = "cloud_merge_done";
 const META_CHOSEN: &str = "key_storage_chosen";
 const META_LAST_OK: &str = "sync_last_ok";
+const META_REMOVED_SEEN: &str = "key_removed_seen";
+/// Shown when the account's keys were removed from another computer.
+pub const KEYS_REMOVED_NOTICE: &str = "Your API keys were removed from your account, so this computer now keeps its own copy.";
 const META_MODE: &str = "key_storage_mode";
 const META_BACKUP_FOR: &str = "backup_done_for";
 const CURSORS: [&str; 3] = ["sync_items_pull", "sync_stats_push", "sync_stats_pull"];
@@ -55,6 +58,9 @@ pub struct SyncReport {
     pub items_changed: bool,
     pub keys_changed: bool,
     pub stats_changed: bool,
+    /// Set when this computer switched itself to local key storage (and why).
+    pub notice: Option<String>,
+    pub switched_to_local: bool,
 }
 
 impl SyncReport {
@@ -290,7 +296,7 @@ impl SyncEngine {
 
         // 4. API keys (only when this computer keeps them in the account).
         if self.keys_sync_active() {
-            report.keys_changed = self.sync_keys().await?;
+            report.keys_changed = self.sync_keys(&mut report).await?;
         }
 
         self.set_meta(META_MERGED, "1")?;
@@ -364,8 +370,16 @@ impl SyncEngine {
     /// a key only the account has is copied here; a key only this computer has is uploaded; if
     /// both differ, whichever side changed since the last sync wins (the account on a tie).
     /// Returns true if a key on this computer changed.
-    async fn sync_keys(&self) -> CloudResult<bool> {
+    async fn sync_keys(&self, report: &mut SyncReport) -> CloudResult<bool> {
         let remote = self.client.get_keys().await?;
+        if self.removal_is_new(&remote) {
+            // The keys were removed from the account on purpose (not one provider): keep this
+            // computer's keys exactly as they are and stop syncing them here.
+            self.stop_syncing_keys();
+            report.notice = Some(KEYS_REMOVED_NOTICE.to_string());
+            report.switched_to_local = true;
+            return Ok(false);
+        }
         let mut changed = false;
         for p in PROVIDERS {
             let local = self.keys.get(p).filter(|k| !k.is_empty());
@@ -436,16 +450,35 @@ impl SyncEngine {
         r
     }
 
-    /// Deletes every key the account holds. This computer's own copies are kept.
+    /// Remembers the account's latest "all keys removed" time and says whether it is news to this
+    /// computer. The first time we look (no record yet) is never news: the user just chose
+    /// Cloud here, and uploading keys clears the mark.
+    fn removal_is_new(&self, remote: &super::client::RemoteKeys) -> bool {
+        let seen: Option<i64> = self.meta(META_REMOVED_SEEN).and_then(|v| v.parse().ok());
+        let news = matches!((seen, remote.removed_at), (Some(s), Some(t)) if t > s);
+        if !news {
+            let now_seen = seen.unwrap_or(0).max(remote.removed_at.unwrap_or(0));
+            let _ = self.db.set_meta(META_REMOVED_SEEN, &now_seen.to_string());
+        }
+        news
+    }
+
+    /// This computer keeps its own keys and no longer syncs them.
+    fn stop_syncing_keys(&self) {
+        let _ = self.db.set_meta(META_MODE, "local");
+        for p in PROVIDERS {
+            let _ = self.db.delete_meta(&key_hash_meta(p));
+        }
+    }
+
+    /// Deletes every key the account holds, then switches THIS computer to local key storage
+    /// (so it doesn't upload them again). Every computer keeps the keys it already has; other
+    /// Cloud computers notice and switch to local too.
     pub async fn remove_cloud_keys(&self) -> CloudResult<()> {
         let _g = self.lock.lock().await;
         let r = self.client.delete_keys().await;
         match &r {
-            Ok(()) => {
-                for p in PROVIDERS {
-                    let _ = self.db.delete_meta(&key_hash_meta(p));
-                }
-            }
+            Ok(()) => self.stop_syncing_keys(),
             Err(e) => self.after_error(e),
         }
         r
@@ -471,6 +504,9 @@ impl SyncEngine {
                     }
                 }
                 KeyStorage::Cloud if from == Some(KeyStorage::Local) => {
+                    // Choosing Cloud again acknowledges any earlier removal; uploading clears it.
+                    let remote = self.client.get_keys().await?;
+                    let _ = self.removal_is_new(&remote);
                     for p in PROVIDERS {
                         if let Some(k) = self.keys.get(p).filter(|k| !k.is_empty()) {
                             self.client.put_key(p, &k).await?;
@@ -479,7 +515,7 @@ impl SyncEngine {
                     }
                 }
                 KeyStorage::Cloud => {
-                    changed = self.sync_keys().await?;
+                    changed = self.sync_keys(&mut SyncReport::default()).await?;
                 }
             }
             Ok(())

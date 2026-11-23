@@ -58,6 +58,10 @@ pub struct RemoteKeys {
     pub openai: Option<RemoteKey>,
     #[serde(default)]
     pub anthropic: Option<RemoteKey>,
+    /// Server time the account's keys were last removed all at once (`DELETE /v1/keys`);
+    /// cleared again when any key is uploaded.
+    #[serde(default)]
+    pub removed_at: Option<i64>,
 }
 
 impl RemoteKeys {

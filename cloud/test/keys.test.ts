@@ -19,7 +19,7 @@ describe("API keys", () => {
     expect(typeof updated_at).toBe("number");
 
     const got = await jsonOf(await app.call("/v1/keys", { token: s.access }));
-    expect(got).toEqual({ openai: { key: SECRET_KEY, updated_at }, anthropic: null });
+    expect(got).toEqual({ openai: { key: SECRET_KEY, updated_at }, anthropic: null, removed_at: null });
   });
 
   it("stores ciphertext, never the plaintext, with a fresh IV each write", async () => {
@@ -113,7 +113,7 @@ describe("API keys", () => {
     await app.call("/v1/keys/openai", { method: "PUT", token: s.access, body: { key: "k1" } });
     await app.call("/v1/keys/anthropic", { method: "PUT", token: s.access, body: { key: "k2" } });
     expect((await app.call("/v1/keys", { method: "DELETE", token: s.access })).status).toBe(204);
-    expect(await jsonOf(await app.call("/v1/keys", { token: s.access }))).toEqual({ openai: null, anthropic: null });
+    expect(await jsonOf(await app.call("/v1/keys", { token: s.access }))).toMatchObject({ openai: null, anthropic: null });
   });
 
   it("validates the provider and the key", async () => {
@@ -135,5 +135,62 @@ describe("API keys", () => {
     const r = await app.call("/v1/keys/openai", { method: "PUT", token: s.access, body: { key: SECRET_KEY } });
     expect(r.status).toBe(500);
     expect(await r.text()).not.toContain(SECRET_KEY);
+  });
+
+  describe("removed_at marker", () => {
+    const getKeys = async (app: App, token: string) => jsonOf(await app.call("/v1/keys", { token }));
+
+    it("is null at first, set by DELETE /v1/keys, and cleared by the next non-empty PUT", async () => {
+      const app = new App();
+      const s = await app.signIn();
+      expect((await getKeys(app, s.access)).removed_at).toBeNull();
+
+      const before = Date.now();
+      await app.call("/v1/keys/openai", { method: "PUT", token: s.access, body: { key: "k1" } });
+      await app.call("/v1/keys", { method: "DELETE", token: s.access });
+      const removed = (await getKeys(app, s.access)).removed_at;
+      expect(removed).toBeGreaterThanOrEqual(before);
+      expect(removed).toBeLessThanOrEqual(Date.now());
+
+      await app.call("/v1/keys/anthropic", { method: "PUT", token: s.access, body: { key: "k2" } });
+      const after = await getKeys(app, s.access);
+      expect(after.removed_at).toBeNull();
+      expect(after.anthropic.key).toBe("k2");
+    });
+
+    it("an empty PUT (deleting one provider) does not set it, and does not clear it either", async () => {
+      const app = new App();
+      const s = await app.signIn();
+      await app.call("/v1/keys/openai", { method: "PUT", token: s.access, body: { key: "k1" } });
+      await app.call("/v1/keys/openai", { method: "PUT", token: s.access, body: { key: "" } });
+      expect((await getKeys(app, s.access)).removed_at).toBeNull();
+
+      await app.call("/v1/keys", { method: "DELETE", token: s.access });
+      const marker = (await getKeys(app, s.access)).removed_at;
+      expect(marker).not.toBeNull();
+      await app.call("/v1/keys/openai", { method: "PUT", token: s.access, body: { key: "  " } });
+      expect((await getKeys(app, s.access)).removed_at).toBe(marker);
+    });
+
+    it("another user's calls never touch my marker", async () => {
+      const app = new App();
+      const alice = await app.signIn({ sub: "a", email: "a@example.com" });
+      const bob = await app.signIn({ sub: "b", email: "b@example.com" });
+      await app.call("/v1/keys", { method: "DELETE", token: alice.access });
+      const marker = (await getKeys(app, alice.access)).removed_at;
+      expect(marker).not.toBeNull();
+
+      await app.call("/v1/keys/openai", { method: "PUT", token: bob.access, body: { key: "bob" } });
+      expect((await getKeys(app, alice.access)).removed_at).toBe(marker);
+      expect((await getKeys(app, bob.access)).removed_at).toBeNull();
+
+      await app.call("/v1/keys", { method: "DELETE", token: bob.access });
+      expect((await getKeys(app, alice.access)).removed_at).toBe(marker);
+      // and the other way round: Alice uploading a key leaves Bob's marker alone
+      const bobMarker = (await getKeys(app, bob.access)).removed_at;
+      await app.call("/v1/keys/openai", { method: "PUT", token: alice.access, body: { key: "alice" } });
+      expect((await getKeys(app, bob.access)).removed_at).toBe(bobMarker);
+      expect((await getKeys(app, alice.access)).removed_at).toBeNull();
+    });
   });
 });

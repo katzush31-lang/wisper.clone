@@ -34,7 +34,7 @@ const tableCounts = async (userId: string) => {
 describe("user isolation", () => {
   it("Bob sees none of Alice's data", async () => {
     const { app, bob } = await setup();
-    expect(await jsonOf(await app.call("/v1/keys", { token: bob.access }))).toEqual({ openai: null, anthropic: null });
+    expect(await jsonOf(await app.call("/v1/keys", { token: bob.access }))).toEqual({ openai: null, anthropic: null, removed_at: null });
     expect(await jsonOf(await app.call("/v1/settings", { token: bob.access }))).toEqual({ sections: {} });
     expect((await jsonOf(await app.call("/v1/items", { token: bob.access }))).items).toEqual([]);
     expect((await jsonOf(await app.call("/v1/stats", { token: bob.access }))).rows).toEqual([]);
@@ -103,7 +103,7 @@ describe("user isolation", () => {
     const sneaky = { user_id: alice.userId, userId: alice.userId, sub: alice.userId };
     // Query string, headers and body carrying Alice's id change nothing for Bob.
     const q = `?user_id=${alice.userId}&userId=${alice.userId}&since=0`;
-    expect(await jsonOf(await app.call(`/v1/keys${q}`, { token: bob.access, headers: { "x-user-id": alice.userId } }))).toEqual({ openai: null, anthropic: null });
+    expect(await jsonOf(await app.call(`/v1/keys${q}`, { token: bob.access, headers: { "x-user-id": alice.userId } }))).toEqual({ openai: null, anthropic: null, removed_at: null });
     expect((await jsonOf(await app.call(`/v1/items${q}`, { token: bob.access }))).items).toEqual([]);
     expect((await jsonOf(await app.call(`/v1/stats${q}`, { token: bob.access }))).rows).toEqual([]);
     await app.call("/v1/items", {
