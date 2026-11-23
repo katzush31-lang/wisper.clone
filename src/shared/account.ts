@@ -30,16 +30,19 @@ export function accountState(status: Pick<AccountStatus, "available" | "signedIn
 }
 
 /** Where API keys live right now, for the muted line under the key boxes. */
-export function keyStorageNote(status: Pick<AccountStatus, "available" | "signedIn" | "keyStorage"> | null | undefined): string {
-  if (status?.available && status.signedIn && status.keyStorage === "cloud") {
+export function keyStorageNote(
+  status: Pick<AccountStatus, "available" | "signedIn" | "keyStorage" | "keyStorageChosen"> | null | undefined,
+): string {
+  // Until the choice is made on this computer, nothing has been uploaded.
+  if (status?.available && status.signedIn && status.keyStorage === "cloud" && status.keyStorageChosen !== false) {
     return "Stored in your account and synced to your computers (encrypted)";
   }
   return "Stored on this computer only";
 }
 
 export const KEY_STORAGE_DESCRIPTIONS: Record<KeyStorage, string> = {
-  local: "Your API keys stay on this PC and are never uploaded.",
-  cloud: "Your API keys are encrypted and synced, so your other computers can use them without pasting them again.",
+  local: "Your API keys stay on this PC and are never uploaded. This choice is just for this computer.",
+  cloud: "Your API keys are encrypted and synced with your other computers that also use this option, so you don't paste them again.",
 };
 
 /** Who is signed in: name and email when both are known, otherwise whichever exists. */

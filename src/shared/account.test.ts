@@ -46,6 +46,10 @@ describe("keyStorageNote", () => {
     expect(keyStorageNote({ available: true, signedIn: true, keyStorage: "local" })).toBe("Stored on this computer only");
     expect(keyStorageNote({ available: true, signedIn: false, keyStorage: "cloud" })).toBe("Stored on this computer only");
     expect(keyStorageNote(null)).toBe("Stored on this computer only");
+    // Signed in but not chosen yet: nothing has been uploaded.
+    expect(keyStorageNote({ available: true, signedIn: true, keyStorage: "cloud", keyStorageChosen: false })).toBe(
+      "Stored on this computer only",
+    );
   });
 });
 

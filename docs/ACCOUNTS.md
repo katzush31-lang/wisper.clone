@@ -123,8 +123,10 @@ the maximum row count (`more: true`), the client calls again with `since` = the 
   `userName, hotkeys, shortcutsEnabled, languages, theme, alwaysShowBar, barPosition, sounds,
   otherAudio, notifications, defaultMode, cleanupLevel, contextAwareness, contextExcludedApps,
   appStyles, learnAppStyles, modeOverrides, customModes, transforms, keepAudioDays,
-  keepHistoryDays, providers, typingWpm, smartFormatting, account.keyStorage`.
-  **Never synced:** `microphone, keepMicWarm, launchAtLogin, onboarded, version`.
+  keepHistoryDays, providers, typingWpm, smartFormatting`.
+  **Never synced:** `microphone, keepMicWarm, launchAtLogin, onboarded, version, account` —
+  key storage is a **per-computer** choice (decided after review): choosing "This computer only"
+  on one PC can never be overridden by another PC.
 - SQLite migration: `dictionary` and `snippets` gain `uid TEXT` (random UUID, backfilled),
   `updated_at INTEGER`, `deleted INTEGER DEFAULT 0` (soft delete; UI/pipeline ignore deleted rows).
   Builtin dictionary rows are not synced unless the user edited them (source becomes user).
@@ -165,3 +167,15 @@ the maximum row count (`more: true`), the client calls again with `since` = the 
   computer? Sign in to sync" — never blocking.
 - Insights: label "All your computers" or "This computer".
 - Every setting has a one-line plain-English description.
+
+## Review decisions (2026-11-23)
+- Keys are only ever deleted locally when key syncing is active on this computer (Cloud AND
+  chosen) AND the account holds exactly that key (stored hash matches). Before the choice is
+  made, sign-out/revocation never touches keys.
+- Deleting the account keeps this computer's local keys (only the cloud copy is destroyed).
+- Revocation reasons: `{"error":"revoked","reason":"reuse"|"removed"}`. `reuse` (a replayed
+  refresh token — possibly just a dropped response) signs out but keeps local keys; `removed`
+  (signed out from another computer / logout) clears cloud-synced keys.
+- Remote settings are never applied while recording or processing; they wait until idle.
+- Google failures in the callback redirect to the loopback with `error=google_failed` so the
+  app stops waiting. The app has `account_cancel_sign_in`.

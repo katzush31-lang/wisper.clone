@@ -364,6 +364,8 @@ export const api = {
   importBackup: () => call<string>("import_backup"),
 
   accountStatus: () => call<AccountStatus>("account_status"),
+  /** Stops waiting for the browser sign-in */
+  accountCancelSignIn: () => call<void>("account_cancel_sign_in"),
   /** Opens the browser to sign in; resolves when done (plain-English error after 5 minutes) */
   accountSignIn: () => call<AccountStatus>("account_sign_in"),
   accountSignOut: () => call<AccountStatus>("account_sign_out"),

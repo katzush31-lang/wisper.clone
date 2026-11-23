@@ -145,7 +145,11 @@ export default function AccountSection({ onDone }: { onDone?: () => void }) {
                   <span className="account-waiting" role="status">
                     <span className="spinner" aria-hidden /> Waiting…
                   </span>
-                  <button className="btn btn-soft" onClick={() => { setSigningIn(false); setSignInMsg("Sign-in cancelled. You can try again whenever you like."); }}>
+                  <button className="btn btn-soft" onClick={() => {
+                      setSigningIn(false);
+                      setSignInMsg("Sign-in cancelled. You can try again whenever you like.");
+                      api.accountCancelSignIn().catch(() => {});
+                    }}>
                     Cancel
                   </button>
                 </div>
@@ -162,7 +166,11 @@ export default function AccountSection({ onDone }: { onDone?: () => void }) {
       {signedIn && status && status.keyStorageChosen === false && (
         <div className="card account-choose" role="region" aria-label="Choose where to keep your API keys">
           <strong>One last step: where should your API keys be kept?</strong>
-          <p className="muted">Nothing moves until you choose. You can change this later.</p>
+          <p className="muted">
+            Nothing moves until you choose, and you can change it later. This choice is just for this computer. If your
+            account already has keys from another computer, they will be used here (this computer's own keys are kept as a
+            backup).
+          </p>
           <div className="account-choose-btns">
             <button className="btn btn-dark" disabled={busy} onClick={() => setKeyStorage("cloud")}>
               In my account (synced)
