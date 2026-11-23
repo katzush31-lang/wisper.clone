@@ -106,6 +106,13 @@ Auth: `Authorization: Bearer <access>` on all `/v1/*`.
 - `POST /v1/stats {rows:[{uid,created_at,words,duration_ms,app,fixes}]}` → insert-or-ignore (device_id from token). Max 1000.
 - `GET /v1/stats?since=<created_at ms>` → `{rows:[{uid,device_id,created_at,words,duration_ms,app,fixes}]}`
 Body size limit 1 MB. Timestamps are client ms since epoch.
+**Sync cursors use the server's clock** (so a computer with a wrong clock can't cause missed
+changes): `items` and `stats` rows store `server_at` (Worker time when written). `GET /v1/items?since`
+and `GET /v1/stats?since` filter on `server_at >= since` and return `now` (server time); the client
+stores that `now` as its next cursor. `updated_at`/`created_at` stay client times and are used only
+for last-write-wins and for displaying stats. `GET /v1/stats` also returns `now`; if it returned
+the maximum row count (`more: true`), the client calls again with `since` = the last row's `server_at`
+(rows include `server_at`).
 
 ## Desktop (Rust)
 - `Settings` gains `account: AccountSettings { key_storage: KeyStorage (Local|Cloud, default Cloud),

@@ -23,8 +23,7 @@ hound = "3.5"
 strsim = "0.11"
 base64 = "0.22"
 claxon = "0.4"
-sha2 = "0.11.1"
-rand = "0.10.4"
+sha2 = "0.10"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

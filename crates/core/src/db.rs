@@ -1,6 +1,7 @@
 //! Local SQLite database: dictation history (text + audio path), segments of long
 //! recordings, dictionary, snippets, scratchpad notes, and usage statistics.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -154,6 +155,61 @@ pub struct Stats {
     pub daily: Vec<DayCount>,
     pub top_apps: Vec<AppCount>,
     pub fixes: i64,
+    /// "this-computer" or "all-computers" (numbers from every signed-in computer combined).
+    pub scope: String,
+}
+
+/// One synced dictionary word or snippet, in the account's API shape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncItem {
+    /// "dictionary" | "snippet"
+    pub kind: String,
+    pub uid: String,
+    /// The fields (dictionary: word, replace, soundsLike, source, starred, keyword;
+    /// snippet: trigger, expansion). May be empty for a deleted item.
+    #[serde(default, deserialize_with = "data_value")]
+    pub data: serde_json::Value,
+    pub updated_at: i64,
+    #[serde(default, deserialize_with = "bool_or_int", serialize_with = "bool_as_int")]
+    pub deleted: bool,
+}
+
+// The account may send `data` as an object or as a JSON string, and `deleted` as 0/1 or a bool.
+fn data_value<'de, D: serde::Deserializer<'de>>(d: D) -> Result<serde_json::Value, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(match v {
+        serde_json::Value::String(s) => serde_json::from_str(&s).unwrap_or(serde_json::Value::Null),
+        other => other,
+    })
+}
+
+fn bool_or_int<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(match v {
+        serde_json::Value::Bool(b) => b,
+        serde_json::Value::Number(n) => n.as_i64().unwrap_or(0) != 0,
+        _ => false,
+    })
+}
+
+fn bool_as_int<S: serde::Serializer>(b: &bool, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_i64(*b as i64)
+}
+
+/// A completed dictation reduced to numbers (never text), for usage stats across computers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StatRow {
+    pub uid: String,
+    pub created_at: i64,
+    pub words: i64,
+    pub duration_ms: i64,
+    #[serde(default)]
+    pub app: Option<String>,
+    #[serde(default)]
+    pub fixes: i64,
+    /// Filled in by the account when reading rows back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
 }
 
 pub struct Db {
@@ -222,6 +278,14 @@ CREATE TABLE IF NOT EXISTS notes (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS remote_stats (
+  uid TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL,
+  words INTEGER NOT NULL DEFAULT 0,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  app TEXT,
+  fixes INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS mode_choices (
   app_key TEXT NOT NULL, mode_id TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0,
   last_at INTEGER NOT NULL,
@@ -231,6 +295,128 @@ CREATE TABLE IF NOT EXISTS mode_choices (
 
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
+}
+
+/// A deleted row keeps its UNIQUE word/trigger slot. When another row needs that exact text,
+/// the deleted row gives it up by getting its uid appended to the text.
+fn retire_tombstone(conn: &Connection, table: &str, col: &str, text: &str, except_id: i64) -> DbResult<()> {
+    conn.execute(
+        &format!("UPDATE {table} SET {col}={col} || '~' || uid WHERE {col}=?1 AND deleted=1 AND id<>?2"),
+        params![text, except_id],
+    )?;
+    Ok(())
+}
+
+fn str_list(v: &serde_json::Value, key: &str) -> String {
+    let list: Vec<String> = v.get(key).and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or_default();
+    serde_json::to_string(&list).unwrap()
+}
+
+fn apply_dict_item(tx: &Connection, it: &SyncItem) -> DbResult<bool> {
+    let d = &it.data;
+    let word = d.get("word").and_then(|w| w.as_str()).unwrap_or("").trim().to_string();
+    let replace = str_list(d, "replace");
+    let sounds = str_list(d, "soundsLike");
+    let source = match d.get("source").and_then(|s| s.as_str()) {
+        Some("learned") => "learned",
+        _ => "user",
+    };
+    let starred = d.get("starred").and_then(|b| b.as_bool()).unwrap_or(false) as i64;
+    let keyword = d.get("keyword").and_then(|b| b.as_bool()).unwrap_or(true) as i64;
+    let by_uid: Option<(i64, i64)> = tx.query_row("SELECT id, updated_at FROM dictionary WHERE uid=?1", [&it.uid], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+    if let Some((id, mine)) = by_uid {
+        if it.updated_at <= mine {
+            return Ok(false);
+        }
+        if it.deleted || word.is_empty() {
+            tx.execute("UPDATE dictionary SET deleted=1, updated_at=?2 WHERE id=?1", params![id, it.updated_at])?;
+            return Ok(true);
+        }
+        retire_other_word(tx, "dictionary", "word", &word, id)?;
+        tx.execute(
+            "UPDATE dictionary SET word=?2, replace_json=?3, sounds_like_json=?4, source=?5, starred=?6, keyword=?7, hidden=0, deleted=0, updated_at=?8 WHERE id=?1",
+            params![id, word, replace, sounds, source, starred, keyword, it.updated_at],
+        )?;
+        return Ok(true);
+    }
+    if word.is_empty() {
+        return Ok(false); // a deletion for something we never had
+    }
+    let by_word: Option<(i64, String, i64, String)> = tx
+        .query_row("SELECT id, uid, updated_at, source FROM dictionary WHERE word=?1", [&word], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .optional()?;
+    match by_word {
+        None => {
+            tx.execute(
+                "INSERT INTO dictionary (word, replace_json, sounds_like_json, source, starred, keyword, created_at, uid, updated_at, deleted) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?7,?9)",
+                params![word, replace, sounds, source, starred, keyword, it.updated_at, it.uid, it.deleted as i64],
+            )?;
+            Ok(true)
+        }
+        Some((id, my_uid, mine, my_source)) => {
+            // A starter word edited on another computer, or the same word added on two computers:
+            // the newer one wins and everyone ends up with one shared identity.
+            let remote_wins = my_source == "builtin" || it.updated_at > mine || (it.updated_at == mine && it.uid < my_uid);
+            if !remote_wins {
+                return Ok(false);
+            }
+            tx.execute(
+                "UPDATE dictionary SET uid=?2, replace_json=?3, sounds_like_json=?4, source=?5, starred=?6, keyword=?7, hidden=0, deleted=?8, updated_at=?9 WHERE id=?1",
+                params![id, it.uid, replace, sounds, source, starred, keyword, it.deleted as i64, it.updated_at],
+            )?;
+            Ok(true)
+        }
+    }
+}
+
+fn apply_snippet_item(tx: &Connection, it: &SyncItem) -> DbResult<bool> {
+    let trigger = it.data.get("trigger").and_then(|w| w.as_str()).unwrap_or("").trim().to_string();
+    let expansion = it.data.get("expansion").and_then(|w| w.as_str()).unwrap_or("").to_string();
+    let by_uid: Option<(i64, i64)> = tx.query_row("SELECT id, updated_at FROM snippets WHERE uid=?1", [&it.uid], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+    if let Some((id, mine)) = by_uid {
+        if it.updated_at <= mine {
+            return Ok(false);
+        }
+        if it.deleted || trigger.is_empty() {
+            tx.execute("UPDATE snippets SET deleted=1, updated_at=?2 WHERE id=?1", params![id, it.updated_at])?;
+            return Ok(true);
+        }
+        retire_other_word(tx, "snippets", "trigger", &trigger, id)?;
+        tx.execute("UPDATE snippets SET trigger=?2, expansion=?3, deleted=0, updated_at=?4 WHERE id=?1", params![id, trigger, expansion, it.updated_at])?;
+        return Ok(true);
+    }
+    if trigger.is_empty() {
+        return Ok(false);
+    }
+    let by_trigger: Option<(i64, String, i64)> = tx
+        .query_row("SELECT id, uid, updated_at FROM snippets WHERE trigger=?1", [&trigger], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .optional()?;
+    match by_trigger {
+        None => {
+            tx.execute(
+                "INSERT INTO snippets (trigger, expansion, created_at, uid, updated_at, deleted) VALUES (?1,?2,?3,?4,?3,?5)",
+                params![trigger, expansion, it.updated_at, it.uid, it.deleted as i64],
+            )?;
+            Ok(true)
+        }
+        Some((id, my_uid, mine)) => {
+            if !(it.updated_at > mine || (it.updated_at == mine && it.uid < my_uid)) {
+                return Ok(false);
+            }
+            tx.execute("UPDATE snippets SET uid=?2, expansion=?3, deleted=?4, updated_at=?5 WHERE id=?1", params![id, it.uid, expansion, it.deleted as i64, it.updated_at])?;
+            Ok(true)
+        }
+    }
+}
+
+/// An incoming rename wants a word/trigger another local row already has: that other row loses
+/// (it is marked deleted and gives up the text), because the incoming change is newer.
+fn retire_other_word(tx: &Connection, table: &str, col: &str, text: &str, keep_id: i64) -> DbResult<()> {
+    tx.execute(
+        &format!("UPDATE {table} SET {col}={col} || '~' || uid, deleted=1, updated_at=?3 WHERE {col}=?1 AND id<>?2"),
+        params![text, keep_id, now_ms()],
+    )?;
+    Ok(())
 }
 
 fn json_vec(s: &str) -> Vec<String> {
@@ -294,6 +480,44 @@ fn source_str(s: EntrySource) -> &'static str {
     }
 }
 
+fn new_uid() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+fn has_column(conn: &Connection, table: &str, col: &str) -> DbResult<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(1))?.collect::<DbResult<_>>()?;
+    Ok(names.iter().any(|n| n == col))
+}
+
+/// Upgrades older databases in place. Safe to run on every start. Dictionary words and snippets
+/// gain a random `uid` (their identity across computers), `updated_at` (for newest-wins sync)
+/// and `deleted` (deleting is a soft delete so the deletion can sync).
+fn migrate(conn: &Connection) -> DbResult<()> {
+    for table in ["dictionary", "snippets"] {
+        if !has_column(conn, table, "uid")? {
+            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN uid TEXT"), [])?;
+        }
+        if !has_column(conn, table, "updated_at")? {
+            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0"), [])?;
+        }
+        if !has_column(conn, table, "deleted")? {
+            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0"), [])?;
+        }
+        let ids: Vec<i64> = {
+            let mut stmt = conn.prepare(&format!("SELECT id FROM {table} WHERE uid IS NULL"))?;
+            let rows = stmt.query_map([], |r| r.get(0))?.collect::<DbResult<_>>()?;
+            rows
+        };
+        for id in ids {
+            conn.execute(&format!("UPDATE {table} SET uid=?2 WHERE id=?1"), params![id, new_uid()])?;
+        }
+        conn.execute(&format!("UPDATE {table} SET updated_at=created_at WHERE updated_at=0"), [])?;
+        conn.execute(&format!("CREATE UNIQUE INDEX IF NOT EXISTS idx_{table}_uid ON {table}(uid)"), [])?;
+    }
+    Ok(())
+}
+
 impl Db {
     pub fn open(path: &Path) -> DbResult<Db> {
         if let Some(dir) = path.parent() {
@@ -313,6 +537,7 @@ impl Db {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         Ok(Db { conn: Mutex::new(conn) })
     }
 
@@ -569,7 +794,7 @@ impl Db {
     pub fn dict_all(&self) -> DbResult<Vec<DictEntry>> {
         let conn = self.c();
         let mut stmt = conn.prepare(
-            "SELECT id, word, replace_json, sounds_like_json, source, starred, keyword, uses FROM dictionary WHERE hidden=0 ORDER BY starred DESC, source='builtin', word COLLATE NOCASE",
+            "SELECT id, word, replace_json, sounds_like_json, source, starred, keyword, uses FROM dictionary WHERE hidden=0 AND deleted=0 ORDER BY starred DESC, source='builtin', word COLLATE NOCASE",
         )?;
         let rows = stmt.query_map([], dict_row)?;
         rows.collect()
@@ -590,8 +815,8 @@ impl Db {
                 let r = serde_json::to_string(&e.replace).unwrap();
                 let sl = serde_json::to_string(&e.sounds_like).unwrap();
                 added += tx.execute(
-                    "INSERT OR IGNORE INTO dictionary (word, replace_json, sounds_like_json, source, keyword, created_at) VALUES (?1,?2,?3,'builtin',?4,?5)",
-                    params![e.word, r, sl, e.keyword as i64, now_ms()],
+                    "INSERT OR IGNORE INTO dictionary (word, replace_json, sounds_like_json, source, keyword, created_at, uid, updated_at) VALUES (?1,?2,?3,'builtin',?4,?5,?6,?5)",
+                    params![e.word, r, sl, e.keyword as i64, now_ms(), new_uid()],
                 )?;
                 // Refresh built-in words the user hasn't edited (edits turn them into "user").
                 tx.execute(
@@ -607,30 +832,32 @@ impl Db {
 
     pub fn dict_add(&self, e: &DictEntry) -> DbResult<i64> {
         let conn = self.c();
-        // Re-adding a hidden built-in word un-hides it.
-        let existing: Option<(i64, i64)> = conn
-            .query_row("SELECT id, hidden FROM dictionary WHERE word=?1", [&e.word], |r| Ok((r.get(0)?, r.get(1)?)))
-            .optional()?;
-        if let Some((id, _)) = existing {
+        // Re-adding a hidden built-in word or a deleted word brings it back (the UNIQUE word slot
+        // is still taken by the old row). A built-in word added by hand becomes the user's own.
+        let existing: Option<i64> = conn.query_row("SELECT id FROM dictionary WHERE word=?1", [&e.word], |r| r.get(0)).optional()?;
+        if let Some(id) = existing {
             conn.execute(
-                "UPDATE dictionary SET hidden=0, replace_json=?2, sounds_like_json=?3, starred=?4, keyword=?5 WHERE id=?1",
-                params![id, serde_json::to_string(&e.replace).unwrap(), serde_json::to_string(&e.sounds_like).unwrap(), e.starred as i64, e.keyword as i64],
+                "UPDATE dictionary SET hidden=0, deleted=0, replace_json=?2, sounds_like_json=?3, starred=?4, keyword=?5, updated_at=?6,
+                 source=CASE WHEN source='builtin' AND ?7<>'builtin' THEN ?7 ELSE source END WHERE id=?1",
+                params![id, serde_json::to_string(&e.replace).unwrap(), serde_json::to_string(&e.sounds_like).unwrap(), e.starred as i64, e.keyword as i64, now_ms(), source_str(e.source)],
             )?;
             return Ok(id);
         }
         conn.execute(
-            "INSERT INTO dictionary (word, replace_json, sounds_like_json, source, starred, keyword, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![e.word, serde_json::to_string(&e.replace).unwrap(), serde_json::to_string(&e.sounds_like).unwrap(), source_str(e.source), e.starred as i64, e.keyword as i64, now_ms()],
+            "INSERT INTO dictionary (word, replace_json, sounds_like_json, source, starred, keyword, created_at, uid, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?7)",
+            params![e.word, serde_json::to_string(&e.replace).unwrap(), serde_json::to_string(&e.sounds_like).unwrap(), source_str(e.source), e.starred as i64, e.keyword as i64, now_ms(), new_uid()],
         )?;
         Ok(conn.last_insert_rowid())
     }
 
     /// Editing a built-in word makes it the user's own, so starter-list updates won't undo it.
     pub fn dict_update(&self, e: &DictEntry) -> DbResult<()> {
-        self.c().execute(
-            "UPDATE dictionary SET word=?2, replace_json=?3, sounds_like_json=?4, starred=?5, keyword=?6,
+        let conn = self.c();
+        retire_tombstone(&conn, "dictionary", "word", &e.word, e.id)?;
+        conn.execute(
+            "UPDATE dictionary SET word=?2, replace_json=?3, sounds_like_json=?4, starred=?5, keyword=?6, updated_at=?7,
              source=CASE WHEN source='builtin' THEN 'user' ELSE source END WHERE id=?1",
-            params![e.id, e.word, serde_json::to_string(&e.replace).unwrap(), serde_json::to_string(&e.sounds_like).unwrap(), e.starred as i64, e.keyword as i64],
+            params![e.id, e.word, serde_json::to_string(&e.replace).unwrap(), serde_json::to_string(&e.sounds_like).unwrap(), e.starred as i64, e.keyword as i64, now_ms()],
         )?;
         Ok(())
     }
@@ -641,7 +868,8 @@ impl Db {
         if source.as_deref() == Some("builtin") {
             conn.execute("UPDATE dictionary SET hidden=1 WHERE id=?1", [id])?;
         } else {
-            conn.execute("DELETE FROM dictionary WHERE id=?1", [id])?;
+            // Soft delete: the row stays (hidden from every list) so the deletion can sync.
+            conn.execute("UPDATE dictionary SET deleted=1, updated_at=?2 WHERE id=?1", params![id, now_ms()])?;
         }
         Ok(())
     }
@@ -694,7 +922,7 @@ impl Db {
     // ---------- snippets ----------
     pub fn snippets_all(&self) -> DbResult<Vec<Snippet>> {
         let conn = self.c();
-        let mut stmt = conn.prepare("SELECT id, trigger, expansion, uses FROM snippets ORDER BY trigger COLLATE NOCASE")?;
+        let mut stmt = conn.prepare("SELECT id, trigger, expansion, uses FROM snippets WHERE deleted=0 ORDER BY trigger COLLATE NOCASE")?;
         let rows = stmt.query_map([], |r| Ok(Snippet { id: r.get(0)?, trigger: r.get(1)?, expansion: r.get(2)?, uses: r.get(3)? }))?;
         rows.collect()
     }
@@ -702,20 +930,26 @@ impl Db {
     pub fn snippet_save(&self, s: &Snippet) -> DbResult<i64> {
         let conn = self.c();
         if s.id > 0 {
-            conn.execute("UPDATE snippets SET trigger=?2, expansion=?3 WHERE id=?1", params![s.id, s.trigger, s.expansion])?;
+            retire_tombstone(&conn, "snippets", "trigger", &s.trigger, s.id)?;
+            conn.execute("UPDATE snippets SET trigger=?2, expansion=?3, updated_at=?4 WHERE id=?1", params![s.id, s.trigger, s.expansion, now_ms()])?;
             Ok(s.id)
         } else {
+            // Same phrase again (even one that was deleted) updates that row instead of duplicating.
+            let existing: Option<i64> = conn.query_row("SELECT id FROM snippets WHERE trigger=?1", [&s.trigger], |r| r.get(0)).optional()?;
+            if let Some(id) = existing {
+                conn.execute("UPDATE snippets SET expansion=?2, deleted=0, updated_at=?3 WHERE id=?1", params![id, s.expansion, now_ms()])?;
+                return Ok(id);
+            }
             conn.execute(
-                "INSERT INTO snippets (trigger, expansion, created_at) VALUES (?1,?2,?3)
-                 ON CONFLICT(trigger) DO UPDATE SET expansion=excluded.expansion",
-                params![s.trigger, s.expansion, now_ms()],
+                "INSERT INTO snippets (trigger, expansion, created_at, uid, updated_at) VALUES (?1,?2,?3,?4,?3)",
+                params![s.trigger, s.expansion, now_ms(), new_uid()],
             )?;
-            conn.query_row("SELECT id FROM snippets WHERE trigger=?1", [&s.trigger], |r| r.get(0))
+            Ok(conn.last_insert_rowid())
         }
     }
 
     pub fn snippet_delete(&self, id: i64) -> DbResult<()> {
-        self.c().execute("DELETE FROM snippets WHERE id=?1", [id])?;
+        self.c().execute("UPDATE snippets SET deleted=1, updated_at=?2 WHERE id=?1", params![id, now_ms()])?;
         Ok(())
     }
 
@@ -782,16 +1016,150 @@ impl Db {
 
     // ---------- stats ----------
     pub fn stats(&self, typing_wpm: u32, now: chrono::DateTime<Local>) -> DbResult<Stats> {
+        self.stats_with(typing_wpm, now, false)
+    }
+
+    /// Stats for this computer, or (`include_remote`) combined with the numbers other computers
+    /// uploaded. A dictation present both locally and in `remote_stats` is counted once.
+    pub fn stats_with(&self, typing_wpm: u32, now: chrono::DateTime<Local>, include_remote: bool) -> DbResult<Stats> {
         let conn = self.c();
         let mut stmt = conn.prepare(
-            "SELECT created_at, word_count, duration_ms, COALESCE(app_name,''), fixes FROM dictations WHERE status='done' AND kind='dictation'",
+            "SELECT created_at, word_count, duration_ms, COALESCE(app_name,''), fixes, id FROM dictations WHERE status='done' AND kind='dictation'",
         )?;
-        let rows: Vec<(i64, i64, i64, String, i64)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+        let local: Vec<(i64, i64, i64, String, i64, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
             .collect::<DbResult<_>>()?;
         drop(stmt);
+        let mut rows: Vec<(i64, i64, i64, String, i64)> = Vec::with_capacity(local.len());
+        let mut seen: HashSet<String> = HashSet::new();
+        for (a, b, c2, d, e, id) in local {
+            rows.push((a, b, c2, d, e));
+            if include_remote {
+                seen.insert(id);
+            }
+        }
+        if include_remote {
+            let mut stmt = conn.prepare("SELECT uid, created_at, words, duration_ms, COALESCE(app,''), fixes FROM remote_stats")?;
+            let remote: Vec<(String, i64, i64, i64, String, i64)> = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
+                .collect::<DbResult<_>>()?;
+            for (uid, at, words, dur, app, fixes) in remote {
+                if !seen.contains(&uid) {
+                    rows.push((at, words, dur, app, fixes));
+                }
+            }
+        }
         drop(conn);
-        Ok(compute_stats(&rows, typing_wpm, now))
+        let mut s = compute_stats(&rows, typing_wpm, now);
+        s.scope = if include_remote { "all-computers" } else { "this-computer" }.to_string();
+        Ok(s)
+    }
+
+    /// Completed dictations newer than `since` (their `created_at`), as numbers-only rows for the
+    /// account. The dictation id is the row's uid.
+    pub fn stats_rows_since(&self, since: i64, limit: i64) -> DbResult<Vec<StatRow>> {
+        let conn = self.c();
+        let mut stmt = conn.prepare(
+            "SELECT id, created_at, word_count, duration_ms, app_name, fixes FROM dictations
+             WHERE status='done' AND kind='dictation' AND created_at > ?1 ORDER BY created_at LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![since, limit], |r| {
+            Ok(StatRow { uid: r.get(0)?, created_at: r.get(1)?, words: r.get(2)?, duration_ms: r.get(3)?, app: r.get(4)?, fixes: r.get(5)?, device_id: None })
+        })?;
+        rows.collect()
+    }
+
+    /// Stores other computers' stat rows. Returns how many were new.
+    pub fn remote_stats_add(&self, rows: &[StatRow]) -> DbResult<usize> {
+        let mut conn = self.c();
+        let tx = conn.transaction()?;
+        let mut added = 0;
+        for r in rows {
+            added += tx.execute(
+                "INSERT OR IGNORE INTO remote_stats (uid, created_at, words, duration_ms, app, fixes) VALUES (?1,?2,?3,?4,?5,?6)",
+                params![r.uid, r.created_at, r.words, r.duration_ms, r.app, r.fixes],
+            )?;
+        }
+        tx.commit()?;
+        Ok(added)
+    }
+
+    pub fn remote_stats_clear(&self) -> DbResult<()> {
+        self.c().execute("DELETE FROM remote_stats", [])?;
+        Ok(())
+    }
+
+    // ---------- sync (dictionary words and snippets) ----------
+
+    /// Dictionary words and snippets (including deleted ones) changed after `since`, in the API
+    /// shape. Built-in starter words are never included unless the user has made them their own.
+    pub fn items_changed_since(&self, since: i64) -> DbResult<Vec<SyncItem>> {
+        let conn = self.c();
+        let mut out = Vec::new();
+        let mut stmt = conn.prepare(
+            "SELECT uid, word, replace_json, sounds_like_json, source, starred, keyword, updated_at, deleted
+             FROM dictionary WHERE updated_at > ?1 AND source <> 'builtin' ORDER BY updated_at",
+        )?;
+        let rows = stmt.query_map([since], |r| {
+            Ok(SyncItem {
+                kind: "dictionary".into(),
+                uid: r.get(0)?,
+                data: serde_json::json!({
+                    "word": r.get::<_, String>(1)?,
+                    "replace": json_vec(&r.get::<_, String>(2)?),
+                    "soundsLike": json_vec(&r.get::<_, String>(3)?),
+                    "source": r.get::<_, String>(4)?,
+                    "starred": r.get::<_, i64>(5)? != 0,
+                    "keyword": r.get::<_, i64>(6)? != 0,
+                }),
+                updated_at: r.get(7)?,
+                deleted: r.get::<_, i64>(8)? != 0,
+            })
+        })?;
+        for r in rows {
+            out.push(r?);
+        }
+        drop(stmt);
+        let mut stmt = conn.prepare("SELECT uid, trigger, expansion, updated_at, deleted FROM snippets WHERE updated_at > ?1 ORDER BY updated_at")?;
+        let rows = stmt.query_map([since], |r| {
+            Ok(SyncItem {
+                kind: "snippet".into(),
+                uid: r.get(0)?,
+                data: serde_json::json!({ "trigger": r.get::<_, String>(1)?, "expansion": r.get::<_, String>(2)? }),
+                updated_at: r.get(3)?,
+                deleted: r.get::<_, i64>(4)? != 0,
+            })
+        })?;
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Merges items received from the account. Newest `updated_at` wins. An item is matched by
+    /// its uid first, then by word/trigger, so the same word added on two computers becomes one
+    /// entry rather than a duplicate. Returns how many local rows changed.
+    pub fn apply_remote_items(&self, items: &[SyncItem]) -> DbResult<usize> {
+        let mut conn = self.c();
+        let tx = conn.transaction()?;
+        let mut changed = 0;
+        for it in items {
+            let did = match it.kind.as_str() {
+                "dictionary" => apply_dict_item(&tx, it)?,
+                "snippet" => apply_snippet_item(&tx, it)?,
+                _ => false,
+            };
+            changed += did as usize;
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    /// Writes a consistent copy of the whole database to `path` (replacing any file there).
+    pub fn backup_to(&self, path: &Path) -> DbResult<()> {
+        let _ = std::fs::remove_file(path);
+        let p = path.to_string_lossy().replace('\'', "''");
+        self.c().execute_batch(&format!("VACUUM INTO '{p}'"))
     }
 }
 
@@ -860,6 +1228,7 @@ pub fn compute_stats(rows: &[(i64, i64, i64, String, i64)], typing_wpm: u32, now
     apps.sort_by(|a, b| b.words.cmp(&a.words).then(a.name.cmp(&b.name)));
     apps.truncate(8);
     s.top_apps = apps;
+    s.scope = "this-computer".to_string();
     s
 }
 
@@ -1027,5 +1396,190 @@ mod tests {
         assert_eq!(s.daily.len(), 365);
         assert_eq!(s.daily.last().unwrap().words, 100);
         assert_eq!(s.top_apps[0].name, "Word");
+    }
+
+    // ---------- sync support ----------
+
+    #[test]
+    fn old_database_is_migrated_without_losing_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        {
+            // The schema as it was before accounts existed.
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE dictionary (id INTEGER PRIMARY KEY AUTOINCREMENT, word TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                   replace_json TEXT NOT NULL DEFAULT '[]', sounds_like_json TEXT NOT NULL DEFAULT '[]', source TEXT NOT NULL,
+                   starred INTEGER NOT NULL DEFAULT 0, keyword INTEGER NOT NULL DEFAULT 1, uses INTEGER NOT NULL DEFAULT 0,
+                   hidden INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+                 CREATE TABLE snippets (id INTEGER PRIMARY KEY AUTOINCREMENT, trigger TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                   expansion TEXT NOT NULL, uses INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+                 INSERT INTO dictionary (word, source, created_at) VALUES ('Menachem','user',1000),('Shabbos','user',2000);
+                 INSERT INTO snippets (trigger, expansion, created_at) VALUES ('my email','a@b.c',3000);",
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.dict_all().unwrap().len(), 2);
+        assert_eq!(db.snippets_all().unwrap().len(), 1);
+        let items = db.items_changed_since(0).unwrap();
+        assert_eq!(items.len(), 3);
+        assert!(items.iter().all(|i| !i.uid.is_empty() && !i.deleted));
+        let m = items.iter().find(|i| i.data["word"] == "Menachem").unwrap();
+        assert_eq!(m.updated_at, 1000, "updated_at is backfilled from created_at");
+        let uids: HashSet<_> = items.iter().map(|i| i.uid.clone()).collect();
+        assert_eq!(uids.len(), 3, "uids are unique");
+        drop(db);
+        // Opening again keeps the same uids.
+        let db = Db::open(&path).unwrap();
+        let again: HashSet<_> = db.items_changed_since(0).unwrap().into_iter().map(|i| i.uid).collect();
+        assert_eq!(uids, again);
+    }
+
+    #[test]
+    fn deleting_is_soft_and_readding_works() {
+        let db = Db::open_in_memory().unwrap();
+        let id = db.dict_add(&DictEntry::user("Menachem")).unwrap();
+        db.dict_delete(id).unwrap();
+        assert!(db.dict_all().unwrap().is_empty());
+        let deleted = db.items_changed_since(0).unwrap();
+        assert_eq!(deleted.len(), 1);
+        assert!(deleted[0].deleted);
+        // Adding the same word again revives it (same uid, so the account sees an update).
+        let id2 = db.dict_add(&DictEntry::user("menachem")).unwrap();
+        assert_eq!(id, id2);
+        assert_eq!(db.dict_all().unwrap().len(), 1);
+        let it = db.items_changed_since(0).unwrap();
+        assert_eq!(it[0].uid, deleted[0].uid);
+        assert!(!it[0].deleted);
+
+        let sid = db.snippet_save(&Snippet { id: 0, trigger: "my email".into(), expansion: "a@b.c".into(), uses: 0 }).unwrap();
+        db.snippet_delete(sid).unwrap();
+        assert!(db.snippets_all().unwrap().is_empty());
+        let sid2 = db.snippet_save(&Snippet { id: 0, trigger: "my email".into(), expansion: "new".into(), uses: 0 }).unwrap();
+        assert_eq!(sid, sid2);
+        assert_eq!(db.snippets_all().unwrap()[0].expansion, "new");
+        // Renaming another word onto a deleted word's text works too.
+        let a = db.dict_add(&DictEntry::user("Alpha")).unwrap();
+        let b = db.dict_add(&DictEntry::user("Beta")).unwrap();
+        db.dict_delete(a).unwrap();
+        let mut e = db.dict_all().unwrap().into_iter().find(|e| e.id == b).unwrap();
+        e.word = "Alpha".into();
+        db.dict_update(&e).unwrap();
+        assert!(db.dict_all().unwrap().iter().any(|e| e.word == "Alpha"));
+    }
+
+    #[test]
+    fn builtin_words_are_not_synced_until_the_user_edits_them() {
+        let db = Db::open_in_memory().unwrap();
+        db.seed_starter(1, &starter_entries()).unwrap();
+        assert!(db.items_changed_since(0).unwrap().is_empty());
+        let mut z = db.dict_all().unwrap().into_iter().find(|e| e.word == "zechus").unwrap();
+        z.replace = vec!["zechuss".into()];
+        db.dict_update(&z).unwrap();
+        let items = db.items_changed_since(0).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].data["word"], "zechus");
+        assert_eq!(items[0].data["source"], "user");
+    }
+
+    fn dict_item(uid: &str, word: &str, at: i64, deleted: bool) -> SyncItem {
+        SyncItem { kind: "dictionary".into(), uid: uid.into(), data: serde_json::json!({"word": word, "replace": ["x"], "source": "user"}), updated_at: at, deleted }
+    }
+
+    #[test]
+    fn remote_items_merge_newest_wins_and_match_by_word() {
+        let db = Db::open_in_memory().unwrap();
+        db.dict_add(&DictEntry::user("Menachem")).unwrap();
+        let local = db.items_changed_since(0).unwrap().remove(0);
+        // Same word, different uid, newer → one entry, taking the remote identity and content.
+        let n = db.apply_remote_items(&[dict_item("remote-1", "menachem", local.updated_at + 10, false)]).unwrap();
+        assert_eq!(n, 1);
+        let all = db.dict_all().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].replace, vec!["x"]);
+        assert_eq!(db.items_changed_since(0).unwrap()[0].uid, "remote-1");
+        // An older version of the same uid is ignored.
+        assert_eq!(db.apply_remote_items(&[dict_item("remote-1", "Menachem", 5, false)]).unwrap(), 0);
+        // A remote deletion that is newer removes it; an older one does not.
+        assert_eq!(db.apply_remote_items(&[dict_item("remote-1", "Menachem", local.updated_at + 5, true)]).unwrap(), 0);
+        assert_eq!(db.dict_all().unwrap().len(), 1);
+        assert_eq!(db.apply_remote_items(&[dict_item("remote-1", "Menachem", local.updated_at + 20, true)]).unwrap(), 1);
+        assert!(db.dict_all().unwrap().is_empty());
+        // Same word, different uid, but OLDER than ours → ours stays.
+        db.dict_add(&DictEntry::user("Rivka")).unwrap();
+        let mine = db.items_changed_since(0).unwrap().into_iter().find(|i| i.data["word"] == "Rivka").unwrap();
+        assert_eq!(db.apply_remote_items(&[dict_item("other", "Rivka", 1, false)]).unwrap(), 0);
+        assert_eq!(db.dict_all().unwrap()[0].replace, Vec::<String>::new());
+        assert!(db.items_changed_since(0).unwrap().iter().any(|i| i.uid == mine.uid));
+        // A word from the account that we never had is added.
+        db.apply_remote_items(&[dict_item("new", "Chaya", 50, false)]).unwrap();
+        assert!(db.dict_all().unwrap().iter().any(|e| e.word == "Chaya"));
+        // Snippets work the same way.
+        let sn = SyncItem { kind: "snippet".into(), uid: "s1".into(), data: serde_json::json!({"trigger": "sig", "expansion": "Best"}), updated_at: 10, deleted: false };
+        assert_eq!(db.apply_remote_items(&[sn.clone()]).unwrap(), 1);
+        assert_eq!(db.snippets_all().unwrap()[0].expansion, "Best");
+        let del = SyncItem { deleted: true, updated_at: 20, data: serde_json::Value::Null, ..sn };
+        assert_eq!(db.apply_remote_items(&[del]).unwrap(), 1);
+        assert!(db.snippets_all().unwrap().is_empty());
+    }
+
+    #[test]
+    fn remote_item_takes_over_a_builtin_word() {
+        let db = Db::open_in_memory().unwrap();
+        db.seed_starter(1, &starter_entries()).unwrap();
+        let before = db.dict_all().unwrap().len();
+        db.apply_remote_items(&[dict_item("u", "zechus", 1, false)]).unwrap();
+        assert_eq!(db.dict_all().unwrap().len(), before);
+        let z = db.dict_all().unwrap().into_iter().find(|e| e.word == "zechus").unwrap();
+        assert_eq!(z.source, EntrySource::User);
+        assert_eq!(z.replace, vec!["x"]);
+    }
+
+    #[test]
+    fn sync_item_json_is_tolerant_about_shapes() {
+        let it: SyncItem = serde_json::from_str(r#"{"kind":"snippet","uid":"a","data":"{\"trigger\":\"t\",\"expansion\":\"e\"}","updated_at":5,"deleted":1}"#).unwrap();
+        assert!(it.deleted);
+        assert_eq!(it.data["trigger"], "t");
+        let out = serde_json::to_value(&it).unwrap();
+        assert_eq!(out["deleted"], 1);
+    }
+
+    #[test]
+    fn stats_rows_and_combined_scope() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_dictation(&item("a", 1000, "one two three")).unwrap();
+        db.insert_dictation(&item("b", 2000, "four five")).unwrap();
+        let rows = db.stats_rows_since(1000, 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0], StatRow { uid: "b".into(), created_at: 2000, words: 2, duration_ms: 6000, app: Some("Gmail".into()), fixes: 0, device_id: None });
+        let now = Local.with_ymd_and_hms(2026, 11, 20, 15, 0, 0).unwrap();
+        let remote = vec![
+            StatRow { uid: "b".into(), created_at: 2000, words: 2, duration_ms: 6000, app: None, fixes: 0, device_id: Some("d1".into()) },
+            StatRow { uid: "r1".into(), created_at: 3000, words: 10, duration_ms: 6000, app: Some("Word".into()), fixes: 1, device_id: Some("d2".into()) },
+        ];
+        assert_eq!(db.remote_stats_add(&remote).unwrap(), 2);
+        assert_eq!(db.remote_stats_add(&remote).unwrap(), 0);
+        let local_only = db.stats(40, now).unwrap();
+        assert_eq!(local_only.total_words, 5);
+        assert_eq!(local_only.scope, "this-computer");
+        let all = db.stats_with(40, now, true).unwrap();
+        assert_eq!(all.total_words, 15, "the duplicate of local dictation b is counted once");
+        assert_eq!(all.total_dictations, 3);
+        assert_eq!(all.scope, "all-computers");
+        db.remote_stats_clear().unwrap();
+        assert_eq!(db.stats_with(40, now, true).unwrap().total_words, 5);
+    }
+
+    #[test]
+    fn backup_copy_opens_with_the_same_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("a.db")).unwrap();
+        db.dict_add(&DictEntry::user("Menachem")).unwrap();
+        let copy = dir.path().join("copy.db");
+        db.backup_to(&copy).unwrap();
+        db.backup_to(&copy).unwrap(); // replacing an existing backup works
+        let b = Db::open(&copy).unwrap();
+        assert_eq!(b.dict_all().unwrap().len(), 1);
     }
 }

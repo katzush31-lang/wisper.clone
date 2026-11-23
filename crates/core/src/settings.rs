@@ -2,7 +2,7 @@
 //! settings files keep working when new options are added. API keys are NOT stored here
 //! (they live in Windows Credential Manager).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -104,6 +104,47 @@ impl Default for ProviderSettings {
     }
 }
 
+/// Where API keys are kept once signed in to a Wisper account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum KeyStorage {
+    /// Only on this computer, never uploaded.
+    Local,
+    /// Encrypted in the user's account and shared with every computer they sign in on.
+    #[default]
+    Cloud,
+}
+
+impl KeyStorage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KeyStorage::Local => "local",
+            KeyStorage::Cloud => "cloud",
+        }
+    }
+    pub fn parse(s: &str) -> Option<KeyStorage> {
+        match s {
+            "local" => Some(KeyStorage::Local),
+            "cloud" => Some(KeyStorage::Cloud),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AccountSettings {
+    pub key_storage: KeyStorage,
+    /// Master switch for syncing while signed in.
+    pub sync_enabled: bool,
+}
+
+impl Default for AccountSettings {
+    fn default() -> Self {
+        Self { key_storage: KeyStorage::Cloud, sync_enabled: true }
+    }
+}
+
 /// A per-app style: dictations into this app use this mode.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -160,6 +201,26 @@ pub fn default_transforms() -> Vec<Transform> {
     ]
 }
 
+/// Settings sections that sync between computers (JSON field names). Anything not listed
+/// here (microphone, keepMicWarm, launchAtLogin, onboarded, version, sectionTimes) never leaves
+/// this computer.
+pub const SYNCED_SECTIONS: &[&str] = &[
+    "userName", "hotkeys", "shortcutsEnabled", "languages", "theme", "alwaysShowBar", "barPosition", "sounds",
+    "otherAudio", "notifications", "defaultMode", "cleanupLevel", "contextAwareness", "contextExcludedApps",
+    "appStyles", "learnAppStyles", "modeOverrides", "customModes", "transforms", "keepAudioDays",
+    "keepHistoryDays", "providers", "typingWpm", "smartFormatting", KEY_STORAGE_SECTION,
+];
+
+/// The one synced section that lives inside a nested field (`account.keyStorage`).
+pub const KEY_STORAGE_SECTION: &str = "account.keyStorage";
+
+/// A section value received from the account, with the time it was last changed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemoteSection {
+    pub value: serde_json::Value,
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -205,6 +266,11 @@ pub struct Settings {
     pub typing_wpm: u32,
     /// Spoken "new line" etc. handled even when AI cleanup is off.
     pub smart_formatting: bool,
+    /// Optional Wisper account preferences.
+    pub account: AccountSettings,
+    /// When each synced section last changed on this computer (unix ms), used to decide which
+    /// side is newer when syncing. Managed by the app, not by the UI.
+    pub section_times: HashMap<String, i64>,
 }
 
 impl Default for Settings {
@@ -239,6 +305,8 @@ impl Default for Settings {
             providers: ProviderSettings::default(),
             typing_wpm: 40,
             smart_formatting: true,
+            account: AccountSettings::default(),
+            section_times: HashMap::new(),
         }
     }
 }
@@ -287,6 +355,57 @@ impl Settings {
         self
     }
 
+    /// The synced sections as JSON values keyed by their camelCase field name.
+    pub fn synced_sections(&self) -> BTreeMap<String, serde_json::Value> {
+        let root = serde_json::to_value(self).expect("settings serialise");
+        let mut out = BTreeMap::new();
+        for name in SYNCED_SECTIONS {
+            let v = if *name == KEY_STORAGE_SECTION { root.pointer("/account/keyStorage") } else { root.get(*name) };
+            if let Some(v) = v {
+                out.insert((*name).to_string(), v.clone());
+            }
+        }
+        out
+    }
+
+    /// Applies sections received from the account. Only the listed synced sections can change;
+    /// every never-synced field is left exactly as it was. A section whose value doesn't fit
+    /// (e.g. from a newer app version) is skipped. Returns the names whose value changed.
+    pub fn apply_remote_sections(&mut self, remote: &BTreeMap<String, RemoteSection>) -> Vec<String> {
+        let mut changed = Vec::new();
+        for (name, sec) in remote {
+            if !SYNCED_SECTIONS.contains(&name.as_str()) {
+                continue;
+            }
+            let mut root = serde_json::to_value(&*self).expect("settings serialise");
+            if name == KEY_STORAGE_SECTION {
+                if let Some(slot) = root.pointer_mut("/account/keyStorage") {
+                    *slot = sec.value.clone();
+                }
+            } else {
+                root[name.as_str()] = sec.value.clone();
+            }
+            let Ok(candidate) = serde_json::from_value::<Settings>(root) else { continue };
+            let candidate = candidate.normalised();
+            if candidate != *self {
+                *self = candidate;
+                changed.push(name.clone());
+            }
+            self.section_times.insert(name.clone(), sec.updated_at);
+        }
+        changed
+    }
+
+    /// Records `now` as the change time of every synced section whose value differs from `old`.
+    pub fn stamp_changed_sections(&mut self, old: &Settings, now: i64) {
+        let before = old.synced_sections();
+        for (name, value) in self.synced_sections() {
+            if before.get(&name) != Some(&value) {
+                self.section_times.insert(name, now);
+            }
+        }
+    }
+
     /// The mode to use for an app: user rule, then learned rule, then the default mode.
     pub fn mode_for_app(&self, app_key: &str) -> Option<&AppStyle> {
         self.app_styles
@@ -316,6 +435,84 @@ mod tests {
         assert!(s.sounds.enabled);
         assert_eq!(s.default_mode, "auto");
         assert!(!s.hotkeys.dictate.is_empty());
+    }
+
+    #[test]
+    fn old_settings_files_load_with_account_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        std::fs::write(&p, r#"{"version":1,"userName":"Old","onboarded":true,"theme":"dark"}"#).unwrap();
+        let s = Settings::load(&p);
+        assert_eq!(s.user_name, "Old");
+        assert!(s.onboarded);
+        assert_eq!(s.account.key_storage, KeyStorage::Cloud);
+        assert!(s.account.sync_enabled);
+        assert!(s.section_times.is_empty());
+        // And the new fields round-trip with their documented names.
+        let mut s2 = Settings::default();
+        s2.account.key_storage = KeyStorage::Local;
+        s2.section_times.insert("userName".into(), 5);
+        let json = serde_json::to_value(&s2).unwrap();
+        assert_eq!(json["account"]["keyStorage"], "local");
+        assert_eq!(json["account"]["syncEnabled"], true);
+        assert_eq!(json["sectionTimes"]["userName"], 5);
+    }
+
+    #[test]
+    fn synced_sections_cover_the_documented_list_only() {
+        let s = Settings::default();
+        let sections = s.synced_sections();
+        assert_eq!(sections.len(), SYNCED_SECTIONS.len());
+        for never in ["microphone", "keepMicWarm", "launchAtLogin", "onboarded", "version", "sectionTimes", "account"] {
+            assert!(!sections.contains_key(never), "{never} must not sync");
+        }
+        assert_eq!(sections["account.keyStorage"], "cloud");
+        assert_eq!(sections["theme"], "system");
+    }
+
+    #[test]
+    fn applying_remote_sections_leaves_never_synced_fields_alone() {
+        let mut s = Settings::default();
+        s.microphone = Some("mic-1".into());
+        s.keep_mic_warm = true;
+        s.launch_at_login = false;
+        s.onboarded = true;
+        let mut remote = BTreeMap::new();
+        remote.insert("userName".to_string(), RemoteSection { value: "Sarah".into(), updated_at: 50 });
+        remote.insert("theme".to_string(), RemoteSection { value: "dark".into(), updated_at: 60 });
+        remote.insert("account.keyStorage".to_string(), RemoteSection { value: "local".into(), updated_at: 70 });
+        // Unknown and never-synced names are ignored; bad values are skipped.
+        remote.insert("microphone".to_string(), RemoteSection { value: "evil".into(), updated_at: 80 });
+        remote.insert("typingWpm".to_string(), RemoteSection { value: "fast".into(), updated_at: 80 });
+        let changed = s.apply_remote_sections(&remote);
+        assert_eq!(changed, vec!["account.keyStorage", "theme", "userName"]);
+        assert_eq!(s.user_name, "Sarah");
+        assert_eq!(s.theme, Theme::Dark);
+        assert_eq!(s.account.key_storage, KeyStorage::Local);
+        assert_eq!(s.typing_wpm, 40);
+        assert_eq!(s.microphone.as_deref(), Some("mic-1"));
+        assert!(s.keep_mic_warm && s.onboarded && !s.launch_at_login);
+        assert_eq!(s.section_times["theme"], 60);
+        assert!(!s.section_times.contains_key("microphone"));
+    }
+
+    #[test]
+    fn changed_sections_get_stamped() {
+        let old = Settings::default();
+        let mut new = old.clone();
+        new.user_name = "X".into();
+        new.microphone = Some("m".into()); // never synced → not stamped
+        new.sounds.volume = 0.9;
+        new.account.key_storage = KeyStorage::Local;
+        new.stamp_changed_sections(&old, 1234);
+        let mut keys: Vec<_> = new.section_times.keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, vec!["account.keyStorage", "sounds", "userName"]);
+        assert_eq!(new.section_times["userName"], 1234);
+        // A second stamp with no further change keeps the old times.
+        let snapshot = new.clone();
+        new.stamp_changed_sections(&snapshot, 9999);
+        assert_eq!(new.section_times["userName"], 1234);
     }
 
     #[test]
