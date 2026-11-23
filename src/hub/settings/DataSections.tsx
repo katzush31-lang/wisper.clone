@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type AppInfoDto } from "../../shared/api";
 import { openUrl } from "../../shared/tauri";
-import { ConfirmDialog, SettingGroup, SettingRow, errorText, useToast } from "../components";
+import { SettingGroup, SettingRow, errorText, useToast } from "../components";
 import { AUDIO_RETENTION, HISTORY_RETENTION, retentionFromString, retentionToString, withCurrent, type Option } from "./helpers";
 import { useSaver, type SectionProps } from "./GeneralSection";
 
@@ -46,57 +46,9 @@ export function DataSection({ settings, update }: SectionProps) {
           <p>
             <strong>The text</strong> is sent to Claude (or OpenAI, if you chose that) to be tidied up. If "Read text around the cursor" is on, that includes the app name, window title and a little text before your cursor.
           </p>
-          <p>Nothing else leaves your PC. There is no Wisper account and no one else can see your history.</p>
+          <p>Nothing else leaves your PC. Signing in to a Wisper account is optional. Without one, no one else can see your history.</p>
         </div>
       </SettingGroup>
-    </>
-  );
-}
-
-export function AccountSection({ onDone }: { onDone?: () => void }) {
-  const toast = useToast();
-  const [confirm, setConfirm] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  const run = async (fn: () => Promise<string>, prefix: string) => {
-    setBusy(true);
-    try {
-      const path = await fn();
-      toast(path ? `${prefix} ${path}` : prefix);
-      onDone?.();
-    } catch (e) {
-      toast(errorText(e), "error");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <>
-      <p className="section-intro">There is no online account. Everything (your settings, dictionary, snippets, history and recordings) lives on this PC. A backup file lets you move it to another PC or keep a safe copy.</p>
-      <SettingGroup>
-        <SettingRow title="Export backup" description="Saves your settings, dictionary, snippets and modes into one file you choose where to keep.">
-          <button className="btn btn-soft" disabled={busy} onClick={() => run(api.exportBackup, "Backup saved to")}>
-            Export backup
-          </button>
-        </SettingRow>
-        <SettingRow title="Restore from backup" description="Loads a backup file you saved earlier. This replaces what you have now.">
-          <button className="btn btn-soft" disabled={busy} onClick={() => setConfirm(true)}>
-            Restore from backup
-          </button>
-        </SettingRow>
-      </SettingGroup>
-      <ConfirmDialog
-        open={confirm}
-        title="Restore from backup?"
-        message="This replaces your current settings, dictionary, snippets and modes with the ones in the backup file. This can't be undone, so export a backup first if you might want today's version."
-        confirmLabel="Choose file…"
-        onCancel={() => setConfirm(false)}
-        onConfirm={() => {
-          setConfirm(false);
-          void run(api.importBackup, "Restored");
-        }}
-      />
     </>
   );
 }

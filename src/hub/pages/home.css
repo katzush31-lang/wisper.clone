@@ -190,3 +190,17 @@
   height: 36px;
   padding: 4px 10px;
 }
+
+.home-account-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  margin-bottom: 22px;
+}
+.home-account-card p {
+  margin: 0;
+  flex: 1;
+  font-size: 13.5px;
+  line-height: 1.45;
+}

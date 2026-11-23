@@ -1,7 +1,9 @@
 import { Check, ExternalLink, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { api, type CleanupProvider, type ModelInfo, type Provider, type Settings } from "../../shared/api";
+import { keyStorageNote } from "../../shared/account";
 import { openUrl } from "../../shared/tauri";
+import { useAccountStatus } from "../useAccount";
 import { Segmented, SettingGroup, SettingRow, errorText, useToast } from "../components";
 import { useSaver, type SectionProps } from "./GeneralSection";
 
@@ -125,6 +127,7 @@ function KeyBlock({
 
 export default function ProvidersSection({ settings, update }: SectionProps) {
   const save = useSaver(update);
+  const { status: account } = useAccountStatus();
   const [status, setStatus] = useState<{ openai: boolean; anthropic: boolean }>({ openai: false, anthropic: false });
   const [speech, setSpeech] = useState<ModelInfo[] | null>(null);
   const [claude, setClaude] = useState<ModelInfo[] | null>(null);
@@ -171,6 +174,8 @@ export default function ProvidersSection({ settings, update }: SectionProps) {
           <ModelSelect label="Claude model" models={claude} value={settings.providers.anthropicModel} onChange={(id) => setProviders({ anthropicModel: id })} />
         </SettingRow>
       </SettingGroup>
+
+      <p className="muted key-where">{keyStorageNote(account)}</p>
 
       <SettingGroup title="Cleanup provider">
         <SettingRow

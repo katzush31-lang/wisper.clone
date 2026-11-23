@@ -1,6 +1,8 @@
-import { Mic, Search } from "lucide-react";
+import { Mic, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, compactNumber, comboLabel, events, type HistoryItem, type Stats } from "../../shared/api";
+import { shouldOfferSignIn } from "../../shared/account";
+import { useAccountStatus } from "../useAccount";
 import { EmptyState, SearchBox, dayLabel, timeLabel } from "../components";
 import { useSettings } from "../useSettings";
 import HistoryDetail from "./home/HistoryDetail";
@@ -8,9 +10,20 @@ import { itemText, statusInfo } from "./home/helpers";
 import "./home.css";
 
 const PAGE = 50;
+const DISMISS_KEY = "wisper.accountCardDismissed";
+
+function readDismissed(): boolean {
+  try {
+    return localStorage.getItem(DISMISS_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?: string) => void }) {
   const { settings } = useSettings();
+  const { status: account } = useAccountStatus();
+  const [cardDismissed, setCardDismissed] = useState(readDismissed);
   const [stats, setStats] = useState<Stats | null>(null);
   const [keysMissing, setKeysMissing] = useState(false);
   const [explain, setExplain] = useState(false);
@@ -122,6 +135,30 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
           <Stat value={stats ? String(stats.streakDays) : "0"} label="day streak" />
         </section>
       </div>
+
+      {shouldOfferSignIn(account, cardDismissed) && (
+        <section className="card home-account-card" aria-label="Sync your computers">
+          <p>Use Wisper on more than one computer? Sign in to sync your keys and settings.</p>
+          <button className="btn btn-soft" onClick={() => onOpenSettings("account")}>
+            Sign in…
+          </button>
+          <button
+            className="icon-btn"
+            aria-label="Dismiss"
+            title="Dismiss"
+            onClick={() => {
+              setCardDismissed(true);
+              try {
+                localStorage.setItem(DISMISS_KEY, "1");
+              } catch {
+                /* private window: just hide it for now */
+              }
+            }}
+          >
+            <X size={16} />
+          </button>
+        </section>
+      )}
 
       <div className="home-hist-head">
         <div className="section-label">History</div>

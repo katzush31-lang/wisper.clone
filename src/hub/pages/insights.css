@@ -202,3 +202,9 @@
   text-align: right;
   font-size: 13px;
 }
+
+.badge-scope {
+  background: var(--card-strong);
+  color: var(--text-muted);
+  align-self: center;
+}

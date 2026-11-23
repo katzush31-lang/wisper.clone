@@ -94,6 +94,32 @@ export interface Settings {
   };
   typingWpm: number;
   smartFormatting: boolean;
+  /** optional account preferences (absent on older settings files) */
+  account?: { keyStorage: KeyStorage; syncEnabled: boolean };
+}
+
+export type KeyStorage = "local" | "cloud";
+
+export interface AccountStatus {
+  /** false when this build has no cloud address, so accounts are not offered */
+  available: boolean;
+  signedIn: boolean;
+  email?: string;
+  name?: string;
+  deviceId?: string;
+  keyStorage: KeyStorage;
+  /** unix ms of the last successful sync */
+  lastSync?: number;
+  syncError?: string;
+}
+
+export interface AccountDevice {
+  id: string;
+  name: string;
+  createdAt: number;
+  lastSeen: number;
+  /** true for the computer you are using now */
+  current: boolean;
 }
 
 export type HistoryStatus =
@@ -205,6 +231,8 @@ export interface Stats {
   daily: { date: string; words: number }[];
   topApps: { name: string; words: number }[];
   fixes: number;
+  /** "all-computers" when signed in and combined with your other computers */
+  scope?: "this-computer" | "all-computers";
 }
 
 export interface ModelInfo {
@@ -333,6 +361,17 @@ export const api = {
   exportBackup: () => call<string>("export_backup"),
   importBackup: () => call<string>("import_backup"),
 
+  accountStatus: () => call<AccountStatus>("account_status"),
+  /** Opens the browser to sign in; resolves when done (plain-English error after 5 minutes) */
+  accountSignIn: () => call<AccountStatus>("account_sign_in"),
+  accountSignOut: () => call<AccountStatus>("account_sign_out"),
+  accountSyncNow: () => call<AccountStatus>("account_sync_now"),
+  accountSetKeyStorage: (storage: KeyStorage) => call<AccountStatus>("account_set_key_storage", { storage }),
+  accountDevices: () => call<AccountDevice[]>("account_devices"),
+  accountRemoveDevice: (id: string) => call<void>("account_remove_device", { id }),
+  /** Deletes everything in the cloud and signs out; data on this PC stays */
+  accountDelete: () => call<void>("account_delete"),
+
   // floating bar buttons
   barCancel: () => call<void>("bar_cancel"),
   barFinish: () => call<void>("bar_finish"),
@@ -359,6 +398,7 @@ export const events = {
   /** true while a Scratchpad dictation is recording */
   dictationState: (cb: (recording: boolean) => void) => listen<boolean>("dictation-state", (e) => cb(e.payload)),
   /** a dictation targeted the Scratchpad; payload is the text to insert */
+  accountChanged: (cb: (s: AccountStatus) => void) => listen<AccountStatus>("account-changed", (e) => cb(e.payload)),
   scratchpadText: (cb: (text: string) => void) => listen<string>("scratchpad-text", (e) => cb(e.payload)),
 };
 

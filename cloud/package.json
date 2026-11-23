@@ -1,0 +1,22 @@
+{
+  "name": "wisper-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker backend for Wisper's optional accounts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.23.0",
+    "@cloudflare/workers-types": "4.20260702.1",
+    "typescript": "5.9.3",
+    "@vitest/runner": "4.1.12",
+    "@vitest/snapshot": "4.1.12",
+    "vitest": "4.1.12",
+    "wrangler": "4.124.0"
+  }
+}

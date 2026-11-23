@@ -137,6 +137,7 @@ export default function InsightsPage() {
     <div className="page page-narrow">
       <div className="page-header">
         <h1 className="page-title">Your usage</h1>
+        {stats?.scope && <span className="badge badge-scope">{stats.scope === "all-computers" ? "All your computers" : "This computer"}</span>}
       </div>
 
       {!loaded ? null : empty ? (

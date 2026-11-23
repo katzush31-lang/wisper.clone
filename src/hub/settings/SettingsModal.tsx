@@ -5,7 +5,8 @@ import GeneralSection from "./GeneralSection";
 import ShortcutsSection from "./ShortcutsSection";
 import { AudioSection, DictationSection, NotificationsSection } from "./DictationSection";
 import ProvidersSection from "./ProvidersSection";
-import { AboutSection, AccountSection, DataSection } from "./DataSections";
+import { AboutSection, DataSection } from "./DataSections";
+import AccountSection from "./AccountSection";
 import "./settings.css";
 
 interface Props {
@@ -22,7 +23,7 @@ const SECTIONS: { id: string; label: string; icon: ReactNode }[] = [
   { id: "notifications", label: "Notifications", icon: <Bell size={16} /> },
   { id: "providers", label: "AI providers", icon: <KeyRound size={16} /> },
   { id: "data", label: "Data & privacy", icon: <Database size={16} /> },
-  { id: "account", label: "Backup & account", icon: <Cloud size={16} /> },
+  { id: "account", label: "Account", icon: <Cloud size={16} /> },
   { id: "about", label: "About & updates", icon: <Info size={16} /> },
 ];
 
