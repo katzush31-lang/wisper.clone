@@ -26,8 +26,8 @@ export async function requireUser(req: Request, env: Env): Promise<AuthedUser> {
     claims.did,
     claims.sub,
   );
-  // A device that no longer exists (account deleted elsewhere) counts as removed.
-  if (!device) throw revokedError("removed");
+  // The device row is gone only when the account was deleted (revoked devices keep their row).
+  if (!device) throw revokedError("account_deleted");
   if (device.revoked) throw revokedError(device.revoked_reason);
 
   return { userId: claims.sub, deviceId: claims.did };

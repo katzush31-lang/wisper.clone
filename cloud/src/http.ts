@@ -107,13 +107,13 @@ export function requireString(v: unknown, what: string, maxLen: number, minLen =
   return v;
 }
 
-export type RevokedReason = "reuse" | "removed";
+export type RevokedReason = "reuse" | "removed" | "account_deleted";
 
 export function revokedError(reason: string | null | undefined): HttpError {
   return new HttpError(
     401,
     "revoked",
     "This computer was signed out. Please sign in again.",
-    { reason: reason === "reuse" ? "reuse" : "removed" },
+    { reason: reason === "reuse" || reason === "account_deleted" ? reason : "removed" },
   );
 }

@@ -202,17 +202,14 @@ pub fn default_transforms() -> Vec<Transform> {
 }
 
 /// Settings sections that sync between computers (JSON field names). Anything not listed
-/// here (microphone, keepMicWarm, launchAtLogin, onboarded, version, sectionTimes) never leaves
-/// this computer.
+/// here (microphone, keepMicWarm, launchAtLogin, onboarded, version, sectionTimes and the whole
+/// `account` block, including where API keys are kept) never leaves this computer.
 pub const SYNCED_SECTIONS: &[&str] = &[
     "userName", "hotkeys", "shortcutsEnabled", "languages", "theme", "alwaysShowBar", "barPosition", "sounds",
     "otherAudio", "notifications", "defaultMode", "cleanupLevel", "contextAwareness", "contextExcludedApps",
     "appStyles", "learnAppStyles", "modeOverrides", "customModes", "transforms", "keepAudioDays",
-    "keepHistoryDays", "providers", "typingWpm", "smartFormatting", KEY_STORAGE_SECTION,
+    "keepHistoryDays", "providers", "typingWpm", "smartFormatting",
 ];
-
-/// The one synced section that lives inside a nested field (`account.keyStorage`).
-pub const KEY_STORAGE_SECTION: &str = "account.keyStorage";
 
 /// A section value received from the account, with the time it was last changed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -360,8 +357,7 @@ impl Settings {
         let root = serde_json::to_value(self).expect("settings serialise");
         let mut out = BTreeMap::new();
         for name in SYNCED_SECTIONS {
-            let v = if *name == KEY_STORAGE_SECTION { root.pointer("/account/keyStorage") } else { root.get(*name) };
-            if let Some(v) = v {
+            if let Some(v) = root.get(*name) {
                 out.insert((*name).to_string(), v.clone());
             }
         }
@@ -378,13 +374,7 @@ impl Settings {
                 continue;
             }
             let mut root = serde_json::to_value(&*self).expect("settings serialise");
-            if name == KEY_STORAGE_SECTION {
-                if let Some(slot) = root.pointer_mut("/account/keyStorage") {
-                    *slot = sec.value.clone();
-                }
-            } else {
-                root[name.as_str()] = sec.value.clone();
-            }
+            root[name.as_str()] = sec.value.clone();
             let Ok(candidate) = serde_json::from_value::<Settings>(root) else { continue };
             let candidate = candidate.normalised();
             if candidate != *self {
@@ -394,6 +384,14 @@ impl Settings {
             self.section_times.insert(name.clone(), sec.updated_at);
         }
         changed
+    }
+
+    /// True if the keyboard shortcuts (the main ones or any transform's) differ from `other`'s.
+    /// Used to avoid resetting the shortcut engine (and a held key) when only other settings changed.
+    pub fn shortcuts_differ(&self, other: &Settings) -> bool {
+        self.hotkeys != other.hotkeys
+            || self.transforms.len() != other.transforms.len()
+            || self.transforms.iter().zip(&other.transforms).any(|(a, b)| a.hotkey != b.hotkey)
     }
 
     /// Records `now` as the change time of every synced section whose value differs from `old`.
@@ -466,7 +464,7 @@ mod tests {
         for never in ["microphone", "keepMicWarm", "launchAtLogin", "onboarded", "version", "sectionTimes", "account"] {
             assert!(!sections.contains_key(never), "{never} must not sync");
         }
-        assert_eq!(sections["account.keyStorage"], "cloud");
+        assert!(!sections.contains_key("account.keyStorage"), "key storage is per computer");
         assert_eq!(sections["theme"], "system");
     }
 
@@ -480,20 +478,36 @@ mod tests {
         let mut remote = BTreeMap::new();
         remote.insert("userName".to_string(), RemoteSection { value: "Sarah".into(), updated_at: 50 });
         remote.insert("theme".to_string(), RemoteSection { value: "dark".into(), updated_at: 60 });
+        // Key storage is per computer: a remote value for it is ignored.
         remote.insert("account.keyStorage".to_string(), RemoteSection { value: "local".into(), updated_at: 70 });
         // Unknown and never-synced names are ignored; bad values are skipped.
         remote.insert("microphone".to_string(), RemoteSection { value: "evil".into(), updated_at: 80 });
         remote.insert("typingWpm".to_string(), RemoteSection { value: "fast".into(), updated_at: 80 });
         let changed = s.apply_remote_sections(&remote);
-        assert_eq!(changed, vec!["account.keyStorage", "theme", "userName"]);
+        assert_eq!(changed, vec!["theme", "userName"]);
         assert_eq!(s.user_name, "Sarah");
         assert_eq!(s.theme, Theme::Dark);
-        assert_eq!(s.account.key_storage, KeyStorage::Local);
+        assert_eq!(s.account.key_storage, KeyStorage::Cloud);
+        assert!(!s.section_times.contains_key("account.keyStorage"));
         assert_eq!(s.typing_wpm, 40);
         assert_eq!(s.microphone.as_deref(), Some("mic-1"));
         assert!(s.keep_mic_warm && s.onboarded && !s.launch_at_login);
         assert_eq!(s.section_times["theme"], 60);
         assert!(!s.section_times.contains_key("microphone"));
+    }
+
+    #[test]
+    fn shortcut_changes_are_detected_but_other_settings_are_not() {
+        let a = Settings::default();
+        let mut b = a.clone();
+        b.user_name = "X".into();
+        b.theme = Theme::Dark;
+        assert!(!a.shortcuts_differ(&b));
+        b.transforms[0].hotkey = None;
+        assert!(a.shortcuts_differ(&b));
+        let mut c = a.clone();
+        c.hotkeys.dictate.clear();
+        assert!(a.shortcuts_differ(&c));
     }
 
     #[test]
@@ -503,11 +517,11 @@ mod tests {
         new.user_name = "X".into();
         new.microphone = Some("m".into()); // never synced → not stamped
         new.sounds.volume = 0.9;
-        new.account.key_storage = KeyStorage::Local;
+        new.account.key_storage = KeyStorage::Local; // per computer → not stamped
         new.stamp_changed_sections(&old, 1234);
         let mut keys: Vec<_> = new.section_times.keys().cloned().collect();
         keys.sort();
-        assert_eq!(keys, vec!["account.keyStorage", "sounds", "userName"]);
+        assert_eq!(keys, vec!["sounds", "userName"]);
         assert_eq!(new.section_times["userName"], 1234);
         // A second stamp with no further change keeps the old times.
         let snapshot = new.clone();

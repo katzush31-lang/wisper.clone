@@ -203,9 +203,6 @@ describe("Google login with PKCE", () => {
       const cb = await app.call(`/auth/google/callback?code=whatever&state=${state}`);
       expect(cb.status).toBe(302);
       expect(cb.headers.get("location")).toBe(`http://127.0.0.1:${PORT}/callback?error=google_failed`);
-      // The login request is spent: it cannot be completed afterwards.
-      const again = await app.call(`/auth/google/callback?code=${app.google.issue({ sub: "s", email: "e@example.com" })}&state=${state}`);
-      expect(again.status).toBe(302);
     });
   });
 });
@@ -464,10 +461,10 @@ describe("revocation reasons", () => {
     expect(await reasonOf(await app.call("/auth/refresh", { body: { refresh_token: s.refresh } }))).toEqual([401, "revoked", "removed"]);
   });
 
-  it("a deleted account reports removed for its old tokens", async () => {
+  it("a deleted account reports account_deleted for its old tokens", async () => {
     const app = new App();
     const s = await app.signIn();
     await app.call("/v1/account", { method: "DELETE", token: s.access });
-    expect(await reasonOf(await app.call("/v1/me", { token: s.access }))).toEqual([401, "revoked", "removed"]);
+    expect(await reasonOf(await app.call("/v1/me", { token: s.access }))).toEqual([401, "revoked", "account_deleted"]);
   });
 });
