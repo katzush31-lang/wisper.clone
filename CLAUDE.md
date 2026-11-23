@@ -1,23 +1,68 @@
-# Wisper — notes for Claude sessions
+# Wisper — handbook for Claude sessions
 
-Personal Windows voice-dictation app (a Wispr Flow replacement). Owner is not a developer: explain in plain language, keep updates short.
+Personal Windows voice-dictation app (a Wispr Flow replacement) used by the owner on two PCs and
+possibly by friends. **Owner is not a developer:** explain in plain language, keep updates short,
+lead with what changed for them. Start every new session by reading this file, then `PROGRESS.md`
+(current state + open items), then the doc for the area you're touching.
 
 ## Layout
-- `crates/core` — all platform-independent logic (pipeline, audio DSP/VAD/encoding, providers, prompts, modes, dictionary, snippets, history DB, stats). Must build and test on Linux: `cargo test -p wisper-core`.
-- `src-tauri` — Tauri 2 app: windows (hub `main`, floating `bar`), tray, updater, Tauri commands, and `src/platform/` (Windows-only code behind traits, with no-op stubs on other OSes).
-- `src/` — React 19 + TypeScript UI. `src/hub` (main window), `src/bar` (floating bar), `src/shared` (theme, typed API wrappers).
-- `docs/SPEC.md` (the owner's spec), `docs/PLAN.md` (decisions + phases), `PROGRESS.md`, `TEST_STATUS.md`.
-- `reference/` — Wispr Flow screenshots to match.
+- `crates/core` — all platform-independent logic, must build and test on Linux:
+  pipeline (`pipeline.rs`, tests in `pipeline_tests.rs`), audio DSP/VAD/segments (`audio/`),
+  providers (`providers/`: OpenAI file + Realtime live transcription, Anthropic, model lists),
+  live transcription (`live.rs`, `live_tests.rs`), local "skip the AI" path (`quick.rs`),
+  prompts/modes/dictionary/Hebrew-Yiddish starter list/snippets, SQLite history + stats (`db.rs`),
+  settings (`settings.rs`), hotkey gesture engine (`hotkey.rs`), accounts/sync client (`cloud/`).
+- `src-tauri` — Tauri 2 app: windows (hub `main`, floating `bar`), tray, updater, commands
+  (`commands.rs`), recording lifecycle (`controller.rs`), accounts glue (`account.rs`), and
+  `src/platform/` (Windows-only code behind traits, no-op stubs elsewhere: hooks, paste, UIA, audio).
+- `src/` — React 19 + TypeScript UI: `src/hub` (main window: pages + settings), `src/bar`, `src/shared` (typed API in `api.ts`).
+- `cloud/` — Cloudflare Worker (TypeScript) + D1 for optional accounts. Own tests (`npm test` in `cloud/`) and README.
+- Docs: `docs/SPEC.md` (owner's original spec), `docs/PLAN.md` (decisions), `docs/ACCOUNTS.md`
+  (accounts design + every security review decision), `docs/TEST_CHECKLIST.md` (owner's PC tests),
+  `PROGRESS.md`, `TEST_STATUS.md`, `README.md` (user guide). `reference/` = Wispr Flow screenshots.
 
-## Rules
-- Never lose a dictation: audio is on disk before any network call; failures keep everything for retry.
-- No secrets in the repo. API keys live in Windows Credential Manager (keyring). Updater signing key is the GitHub secret `TAURI_SIGNING_PRIVATE_KEY`.
-- Hebrew/Yiddish terms use Ashkenazi transliteration (zechus, Shabbos, Hashem, be'H).
+## Rules (never break)
+- Never lose a dictation: audio is on disk before any network call; failures keep everything for
+  retry. Live transcription is only an accelerator — every piece can fall back to the saved audio.
+- Never paste into the wrong place or damage the user's clipboard/typing.
+- No secrets in the repo. API keys: Windows Credential Manager (and, if the user chooses, encrypted
+  in their account). Never weaken or delete tests to make them pass.
+- Hebrew/Yiddish terms use Ashkenazi transliteration (zechus, Shabbos, Hashem, b'ezras Hashem).
 - Every setting in the UI has a one-line plain-English description.
-- Don't weaken or delete tests to make them pass.
-- Pushing to `main` publishes a release (GitHub Actions `build.yml`); the owner has given permission to push to `main`.
+- Accounts: a user can only ever reach their own data (Worker takes the user from the token only);
+  keys are deleted locally only when safely held in the account (see `docs/ACCOUNTS.md`).
+
+## How we work
+- Develop on branch `claude/bold-galileo-ey98vb` (WIP commits there are fine; they don't release).
+- **Pushing to `main` publishes a release** (GitHub Actions `build.yml`): tests → Cloudflare Worker
+  deploy (migrations, secrets created only if missing) → Windows installer → GitHub Release; the app
+  auto-updates. The owner has given permission to push to `main`, but only after tests pass and the
+  independent reviewer signs off. Release/deploy only happen for pushes to `main`; a manual
+  `workflow_dispatch` on the dev branch runs all checks (incl. real-API ones) without releasing.
+- Use subagents (`.claude/agents/`, each with its model): `feature-dev`/`ui-dev`/`test-writer`
+  (Sonnet), `architect`/`audio-pipeline`/`prompt-engineer`/`spec-reviewer` (Opus), `researcher`/
+  `test-runner` (Haiku). Give agents disjoint files when they run in parallel. Every feature gets a
+  `spec-reviewer` pass (read-only) and must reach SIGN OFF before release.
+- After a release, check the Actions run and the release, and tell the owner briefly.
 
 ## Commands
-- `npm run typecheck`, `npm test`, `npm run build`
-- `cargo test -p wisper-core`, `cargo build -p wisper` (Linux needs webkit2gtk dev libs)
-- Release build on Windows CI: `npx tauri build`
+- UI: `npm run typecheck`, `npm test` (vitest, `src/**/*.test.ts`), `npm run build`
+- Core: `cargo test -p wisper-core` (Linux). App: `cargo build -p wisper` (Linux needs webkit2gtk dev
+  libs); Windows check from Linux: `cargo xwin check -p wisper --target x86_64-pc-windows-msvc`.
+- Cloud: `cd cloud && npm test` (Miniflare + real D1). Full end-to-end against the real Worker run
+  locally: `cloud/scripts/e2e.sh` (needs no secrets; generates test ones).
+- Real-API checks (ignored by default; CI runs them when secrets exist):
+  `cargo test -p wisper-core --test golden -- --ignored` (cleanup quality, `GOLDEN_MODELS=a,b`),
+  `--test quick_eval` (skip-the-AI vs real AI), `--test live_realtime` (needs OPENAI_API_KEY).
+- Release build on Windows CI: `npx tauri build`.
+
+## Infrastructure (no secrets here)
+- GitHub secrets: `TAURI_SIGNING_PRIVATE_KEY` (updater), `ANTHROPIC_API_KEY` (CI quality tests),
+  `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`.
+  Not set yet: `OPENAI_API_KEY` (needed for the real live-transcription check).
+- Cloudflare: Worker `wisper-api` at https://wisper-api.katzush31.workers.dev, D1 database `wisper`
+  (id `6e1cd762-f510-49e3-8235-835156ea314d`). Worker secrets `MASTER_KEY`/`TOKEN_SECRET` were
+  generated by CI and must never be regenerated (stored keys would become unreadable).
+- Google OAuth client "Wisper server" (web app) with redirect
+  `https://wisper-api.katzush31.workers.dev/auth/google/callback`; app published (basic scopes).
+- Download link: https://github.com/katzush31-lang/wisper.clone/releases/latest/download/Wisper-Setup.exe

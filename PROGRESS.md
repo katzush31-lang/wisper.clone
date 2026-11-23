@@ -1,27 +1,43 @@
 # Progress
 
+## Current state (keep this section up to date)
+- Latest release: see GitHub Releases (auto-published from `main`). Owner uses it daily on two PCs.
+- Working: dictation everywhere, modes, voice commands, history, dictionary (Hebrew/Yiddish),
+  snippets, insights, scratchpad, transforms, optional accounts + sync, live transcription,
+  fast model for short dictations, Speed panel, shortcuts on/off switch.
+- In progress: see "Open items".
+
+## Open items (owner requests, newest first)
+- 2026-11-23 batch: (1) hide "no speech"/failed clutter in History, (2) keys must sync on a second
+  computer without toggling key storage, (3) mouse shortcuts (e.g. double-click the scroll wheel),
+  (4) shortcuts must start/stop recording regardless of focus/text box, (5) copy button on each
+  History row, (6) Settings page showing the exact prompts sent to the AI, (7) "Set up AI keys"
+  shown on Home although keys exist. Status: being built (see git log / TEST_STATUS.md).
+- Speed: owner finds Sonnet cleanup (~3 s on a long dictation) slow vs Wispr Flow. Options
+  discussed: Haiku for longer dictations (setting already exists), cleaning while you talk,
+  a faster inference provider. Awaiting owner's choice.
+- Not run yet: real-API live transcription check (needs `OPENAI_API_KEY` GitHub secret).
+- Not built: learning from manual corrections; dragging/docking the floating bar.
+
+## History
 | Date | Phase | State |
 |---|---|---|
-| 2026-11-22 | Planning | Research, plan (`docs/PLAN.md`) approved. Repo made public; updater signing secret added. |
-| 2026-11-22 | 0 Foundations | Done. CI builds + publishes installer on every push to `main` (v0.1.2 first release). |
-| 2026-11-22 | 1–5 (built together) | Core engine, Windows layer, all UI pages built and visually checked. |
-| 2026-11-22 | Review rounds | Independent reviewer (Opus) — round 1: 5 must-fix + 12 should-fix, all addressed (d2bbb37, 754355c); round 2: 2 partial + 10 new, addressed (ba018a9); round 3: **signed off**, plus six low-priority notes fixed (microphone sessions can no longer be closed by an old stop, a settings change or the mic test; Esc during a voice command never touches another window). Releases v0.1.3 onwards. |
+| 2026-11-22 | Planning | Research, plan (`docs/PLAN.md`) approved. Repo public; updater signing secret added. |
+| 2026-11-22 | 0 Foundations | CI builds + publishes installer on every push to `main`. |
+| 2026-11-22 | 1–5 | Core engine, Windows layer, all UI pages. Independent review: 3 rounds, signed off. |
+| 2026-11-22 | Fixes | Pages scroll, shortcut recorder fallback, floating bar click-through (window region). Real-API quality tests 12/12. |
+| 2026-11-23 | Accounts (optional) | Google Sign-In, encrypted cloud API keys (per-computer choice), sync of settings/dictionary/snippets/word counts via Cloudflare Worker + D1 (`cloud/`). Design: `docs/ACCOUNTS.md`. Security review: 4 rounds, signed off. |
+| 2026-11-23 | Speed | Live transcription (OpenAI Realtime, per-piece fallback to the saved recording), fast model for short dictations (Haiku 12/12 golden, ~0.63 s vs Sonnet 1.31 s), shared HTTP client + prewarm, Speed panel, optional local "skip the AI" path (off; CI eval 70/73 identical). Review signed off. |
 
-## What exists
-- **Core (`crates/core`)**: hotkey gestures, audio DSP (resample, VAD, pause-based segments, FLAC, crash-safe PCM), Hebrew/Yiddish starter dictionary, dictionary/suggestions, snippets, modes + spoken switch, prompts, OpenAI/Claude providers with retry, SQLite history/stats, pipeline (transcribe while recording, cleanup with fallback, offline queue, crash recovery, retention), sounds.
-- **App (`src-tauri`)**: keyboard/mouse hook with Start-menu masking, cpal capture (+warm pre-roll), clipboard paste with full restore, UI Automation context/selection, media pause/mute with crash-safe restore, controller (bar states, undo/redo-as, paste/copy last, transforms, Scratchpad dictation, queue worker, notifications), Credential Manager keys, backup/restore, auto-update.
-- **UI (`src`)**: home + history detail, insights, dictionary (+suggestions, CSV import), snippets (+JSON import), style (modes, custom modes, per-app styles), transforms, scratchpad, full settings, floating bar.
-
-| 2026-11-23 | Accounts (optional) | Google Sign-In, encrypted cloud API keys (per-computer choice), sync of settings/dictionary/snippets/word counts via a Cloudflare Worker + D1 (`cloud/`). Design: `docs/ACCOUNTS.md`. Independent security review: 4 rounds, signed off. |
-
-| 2026-11-23 | Speed | Live transcription (OpenAI Realtime, per-piece fallback to the saved recording), fast model for short dictations (Haiku 12/12 golden, ~0.63 s vs 1.31 s), shared HTTP client + connection prewarm, Speed panel, optional local "skip the AI" path (off; CI eval 70/73 identical). Independent review signed off. |
-
-## Decisions made during review
-- Spoken mode switch needs a pause/punctuation after the phrase ("As an email, …") or the word "mode/style/format" with a lead-in ("In list mode …"), so ordinary sentences are never cut.
-- Undo/redo of an inserted dictation works by Ctrl+Z + paste, so it's only allowed in the same window, within 2 minutes, and if nothing was typed since.
-- A dictation that takes more than ~45 s (+ a little per minute of audio) moves to the background queue and appears in History when done.
-
-## Next
-- Owner tests on Windows (checklist), then fix what they find.
-- Add OPENAI/ANTHROPIC API keys as GitHub secrets to run the real-API quality tests.
-- Possible later: live WebSocket transcription if the wait after stopping feels slow; learning from manual corrections; bar drag/dock.
+## Decisions (keep)
+- Spoken mode switch needs a pause/punctuation after the phrase ("As an email, …") or a lead-in
+  with "mode/style/format" ("In list mode, …"), so ordinary sentences are never cut.
+- Undo/redo of an inserted dictation (Ctrl+Z + paste) only in the same window, within 2 minutes,
+  and only if nothing was typed since.
+- A dictation that takes longer than ~45 s (+ a little per minute of audio) moves to the
+  background queue and appears in History when done.
+- Key storage is chosen per computer; "Remove keys from your account" is separate and every
+  computer keeps its own copy. See `docs/ACCOUNTS.md` → Review decisions.
+- Live transcription streams 24 kHz audio to OpenAI and commits at the same pauses as the saved
+  recording; any problem → that piece is transcribed from the recording. After a network failure,
+  live pauses for 10 minutes.
