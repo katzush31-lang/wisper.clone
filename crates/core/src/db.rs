@@ -558,6 +558,11 @@ impl Db {
         Ok(())
     }
 
+    pub fn delete_meta(&self, key: &str) -> DbResult<()> {
+        self.c().execute("DELETE FROM meta WHERE key=?1", [key])?;
+        Ok(())
+    }
+
     // ---------- dictations ----------
     pub fn insert_dictation(&self, item: &HistoryItem) -> DbResult<()> {
         self.c().execute(
