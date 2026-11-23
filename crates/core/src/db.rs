@@ -1116,6 +1116,15 @@ impl Db {
         self.items_query(i64::MIN, true)
     }
 
+    /// Flags every shareable word and snippet as not yet uploaded. Used on a first merge with an
+    /// account, so a computer's existing words reach a brand-new account.
+    pub fn mark_all_items_dirty(&self) -> DbResult<()> {
+        let conn = self.c();
+        conn.execute("UPDATE dictionary SET dirty=1 WHERE source <> 'builtin'", [])?;
+        conn.execute("UPDATE snippets SET dirty=1", [])?;
+        Ok(())
+    }
+
     /// Marks uploaded items as clean. A row edited again while the upload was running (its
     /// `updated_at` moved) stays dirty.
     pub fn mark_items_pushed(&self, items: &[SyncItem]) -> DbResult<()> {

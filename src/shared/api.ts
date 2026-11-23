@@ -366,6 +366,8 @@ export const api = {
   accountStatus: () => call<AccountStatus>("account_status"),
   /** Stops waiting for the browser sign-in */
   accountCancelSignIn: () => call<void>("account_cancel_sign_in"),
+  /** Deletes the API keys stored in the account (every computer keeps its own copy) */
+  accountRemoveCloudKeys: () => call<AccountStatus>("account_remove_cloud_keys"),
   /** Opens the browser to sign in; resolves when done (plain-English error after 5 minutes) */
   accountSignIn: () => call<AccountStatus>("account_sign_in"),
   accountSignOut: () => call<AccountStatus>("account_sign_out"),

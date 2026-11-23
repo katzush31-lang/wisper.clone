@@ -165,6 +165,7 @@ pub fn run() {
             account::account_cancel_sign_in,
             account::account_sync_now,
             account::account_set_key_storage,
+            account::account_remove_cloud_keys,
             account::account_devices,
             account::account_remove_device,
             account::account_delete,

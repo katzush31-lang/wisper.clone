@@ -132,7 +132,8 @@ impl SyncEngine {
         if !self.key_storage_chosen() {
             return None;
         }
-        Some(if self.meta(META_MODE).as_deref() == Some("local") { KeyStorage::Local } else { KeyStorage::Cloud })
+        // A recorded choice with no stored mode is treated as local: the safer default.
+        Some(if self.meta(META_MODE).as_deref() == Some("cloud") { KeyStorage::Cloud } else { KeyStorage::Local })
     }
 
     /// True if API keys should be synced with the account right now.
@@ -250,6 +251,8 @@ impl SyncEngine {
         let mut report = SyncReport { first_merge: first, ..Default::default() };
         if first {
             self.backup_before_first_sync(settings)?;
+            // A new account has none of this computer's words and snippets yet: send them all.
+            self.db.mark_all_items_dirty().map_err(dberr)?;
         }
 
         // 1. Settings sections.
@@ -378,7 +381,10 @@ impl SyncEngine {
                     } else {
                         // The account's key wins, but the replaced key is kept in the credential
                         // store as "previous-<provider>-api-key" so it is never irrecoverably lost.
-                        self.keys.keep_previous(p, &l);
+                        // (Only the first time: a later rotation must not overwrite the stashed original.)
+                        if last.is_none() {
+                            self.keys.keep_previous(p, &l);
+                        }
                         self.keys.set(p, &r.key);
                         self.set_meta(&key_hash_meta(p), &hash_hex(&r.key))?;
                         changed = true;
@@ -388,6 +394,7 @@ impl SyncEngine {
                     if last.as_deref() == Some(hash_hex(&l).as_str()) {
                         // We synced this exact key before and the account no longer has it: it
                         // was removed on another computer, so remove it here too.
+                        self.keys.keep_previous(p, &l); // recoverable if that removal was a mistake
                         self.keys.set(p, "");
                         let _ = self.db.delete_meta(&key_hash_meta(p));
                         changed = true;
@@ -423,8 +430,23 @@ impl SyncEngine {
         r
     }
 
-    /// The user chose where keys live. Moving to `Local` after using the account removes the
-    /// keys from the account (this computer keeps its copies); moving to `Cloud` after `Local`
+    /// Deletes every key the account holds. This computer's own copies are kept.
+    pub async fn remove_cloud_keys(&self) -> CloudResult<()> {
+        let _g = self.lock.lock().await;
+        let r = self.client.delete_keys().await;
+        match &r {
+            Ok(()) => {
+                for p in PROVIDERS {
+                    let _ = self.db.delete_meta(&key_hash_meta(p));
+                }
+            }
+            Err(e) => self.after_error(e),
+        }
+        r
+    }
+
+    /// The user chose where keys live (per computer). Moving to `Local` just stops this computer
+    /// syncing keys; moving to `Cloud` after `Local`
     /// uploads this computer's keys. The very first choice after signing in only reconciles, so
     /// it can never wipe keys another computer uploaded. The new choice is recorded here, under
     /// the lock and only once the account has been updated; the app mirrors it into settings.
@@ -436,11 +458,10 @@ impl SyncEngine {
         let r: CloudResult<()> = async {
             match to {
                 KeyStorage::Local => {
-                    if from == Some(KeyStorage::Cloud) {
-                        self.client.delete_keys().await?;
-                        for p in PROVIDERS {
-                            let _ = self.db.delete_meta(&key_hash_meta(p));
-                        }
+                    // Only this computer stops syncing keys. Its copies stay, and so do the
+                    // account's (other computers may use them); see `remove_cloud_keys`.
+                    for p in PROVIDERS {
+                        let _ = self.db.delete_meta(&key_hash_meta(p));
                     }
                 }
                 KeyStorage::Cloud if from == Some(KeyStorage::Local) => {

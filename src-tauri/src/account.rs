@@ -457,6 +457,14 @@ pub async fn account_set_key_storage(app: AppHandle, storage: String) -> Res<Acc
     Ok(a.emit())
 }
 
+/// Deletes the keys kept in the account (this computer's own copies stay).
+#[tauri::command]
+pub async fn account_remove_cloud_keys(app: AppHandle) -> Res<AccountStatus> {
+    let a = account(&app);
+    a.signed_in_engine()?.remove_cloud_keys().await.map_err(|e| e.message())?;
+    Ok(a.emit())
+}
+
 #[tauri::command]
 pub async fn account_devices(app: AppHandle) -> Res<Vec<cloud::Device>> {
     let a = account(&app);

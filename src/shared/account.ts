@@ -41,7 +41,7 @@ export function keyStorageNote(
 }
 
 export const KEY_STORAGE_DESCRIPTIONS: Record<KeyStorage, string> = {
-  local: "Your API keys stay on this PC and are never uploaded. This choice is just for this computer.",
+  local: "This computer's API keys stay here and are never uploaded. Keys already in your account stay there for your other computers.",
   cloud: "Your API keys are encrypted and synced with your other computers that also use this option, so you don't paste them again.",
 };
 

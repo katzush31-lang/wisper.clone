@@ -179,3 +179,9 @@ the maximum row count (`more: true`), the client calls again with `since` = the 
 - Remote settings are never applied while recording or processing; they wait until idle.
 - Google failures in the callback redirect to the loopback with `error=google_failed` so the
   app stops waiting. The app has `account_cancel_sign_in`.
+- (Re-review) Switching a computer from Cloud to Local only stops that computer syncing keys;
+  the account copy stays for other computers. Removing keys from the account is a separate,
+  explicit action (`account_remove_cloud_keys`, `DELETE /v1/keys`). Before a Cloud computer
+  blanks a key because the account no longer has it, the local key is stashed as
+  `previous-<provider>-api-key`. A first merge into a new/different account uploads all of this
+  computer's words and snippets.

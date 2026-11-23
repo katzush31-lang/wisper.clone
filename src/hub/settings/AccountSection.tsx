@@ -4,7 +4,7 @@ import { KEY_STORAGE_DESCRIPTIONS, accountState, syncLine, timeAgo, whoLabel } f
 import { ConfirmDialog, Segmented, SettingGroup, SettingRow, errorText, useToast } from "../components";
 import { useAccountStatus } from "../useAccount";
 
-type Confirm = null | "restore" | "keys-local" | "delete" | { signOutDevice: AccountDevice };
+type Confirm = null | "restore" | "remove-cloud-keys" | "delete" | { signOutDevice: AccountDevice };
 
 export default function AccountSection({ onDone }: { onDone?: () => void }) {
   const toast = useToast();
@@ -98,8 +98,10 @@ export default function AccountSection({ onDone }: { onDone?: () => void }) {
       return;
     }
     if (storage === status.keyStorage) return;
-    if (storage === "local") setConfirm("keys-local");
-    else void act(() => api.accountSetKeyStorage("cloud"), "Your keys are now synced through your account");
+    void act(
+      () => api.accountSetKeyStorage(storage),
+      storage === "cloud" ? "Your keys are now synced through your account" : "This computer's keys now stay on this computer only",
+    );
   };
 
   const runBackup = async (fn: () => Promise<string>, prefix: string) => {
@@ -215,6 +217,14 @@ export default function AccountSection({ onDone }: { onDone?: () => void }) {
                 onChange={setKeyStorage}
               />
             </SettingRow>
+            <SettingRow
+              title="Remove keys from your account"
+              description="Deletes the encrypted copy of your API keys from your account. Your computers keep their own copies."
+            >
+              <button className="btn btn-soft" disabled={busy} onClick={() => setConfirm("remove-cloud-keys")}>
+                Remove…
+              </button>
+            </SettingRow>
           </SettingGroup>
 
           <SettingGroup title="Your computers">
@@ -278,14 +288,14 @@ export default function AccountSection({ onDone }: { onDone?: () => void }) {
         }}
       />
       <ConfirmDialog
-        open={confirm === "keys-local"}
-        title="Keep your keys on this computer only?"
-        message="Your API keys will be removed from the cloud, so your other computers will need their own keys. The keys stay on this PC and keep working here."
-        confirmLabel="Remove from cloud"
+        open={confirm === "remove-cloud-keys"}
+        title="Remove your API keys from your account?"
+        message="The encrypted copy in your account is deleted. Every computer keeps the keys it already has, but a new computer will need the keys pasted in again."
+        confirmLabel="Remove from account"
         onCancel={() => setConfirm(null)}
         onConfirm={() => {
           setConfirm(null);
-          void act(() => api.accountSetKeyStorage("local"), "Your keys are now kept on this computer only");
+          void act(() => api.accountRemoveCloudKeys(), "Your API keys were removed from your account");
         }}
       />
       <ConfirmDialog

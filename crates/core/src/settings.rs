@@ -373,6 +373,11 @@ impl Settings {
             if !SYNCED_SECTIONS.contains(&name.as_str()) {
                 continue;
             }
+            // Edited here since the account's version was written (e.g. while this change waited
+            // for a recording to finish): keep the newer local edit.
+            if self.section_times.get(name).copied().unwrap_or(0) > sec.updated_at {
+                continue;
+            }
             let mut root = serde_json::to_value(&*self).expect("settings serialise");
             root[name.as_str()] = sec.value.clone();
             let Ok(candidate) = serde_json::from_value::<Settings>(root) else { continue };
@@ -508,6 +513,20 @@ mod tests {
         let mut c = a.clone();
         c.hotkeys.dictate.clear();
         assert!(a.shortcuts_differ(&c));
+    }
+
+    #[test]
+    fn remote_sections_older_than_a_local_edit_are_skipped() {
+        let mut s = Settings::default();
+        s.user_name = "Edited while waiting".into();
+        s.section_times.insert("userName".into(), 200);
+        let mut remote = BTreeMap::new();
+        remote.insert("userName".to_string(), RemoteSection { value: "Old remote".into(), updated_at: 100 });
+        remote.insert("theme".to_string(), RemoteSection { value: "dark".into(), updated_at: 100 });
+        let changed = s.apply_remote_sections(&remote);
+        assert_eq!(changed, vec!["theme"]);
+        assert_eq!(s.user_name, "Edited while waiting");
+        assert_eq!(s.section_times["userName"], 200);
     }
 
     #[test]
