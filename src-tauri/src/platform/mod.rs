@@ -60,6 +60,10 @@ pub struct HookShared {
     pub typed: AtomicU64,
     /// Key events the hook let through unprocessed because the engine was busy (should stay 0).
     pub lock_misses: AtomicU64,
+    /// When (ms since boot) the hook last demonstrably missed key events: Windows had removed
+    /// it, keys went to an admin window, or the engine was busy. 0 = never. Only then may the
+    /// OS's key state end a shortcut that is in use (see `GestureEngine::sync_keys`).
+    pub missed_keys_at: AtomicU64,
 }
 
 impl HookShared {
@@ -73,6 +77,7 @@ impl HookShared {
             paused: AtomicBool::new(false),
             typed: AtomicU64::new(0),
             lock_misses: AtomicU64::new(0),
+            missed_keys_at: AtomicU64::new(0),
         })
     }
 

@@ -101,6 +101,10 @@ pub struct HistoryQuery {
     /// Leave out items with any of these statuses.
     #[serde(default)]
     pub exclude_status: Option<Vec<String>>,
+    /// Leave out recordings that are waiting to be processed (queued or failed, audio still
+    /// there). Failed ones whose audio is gone stay in the list as ordinary rows.
+    #[serde(default)]
+    pub exclude_waiting: bool,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -775,6 +779,9 @@ impl Db {
             for st in list {
                 args.push(Box::new(st.clone()));
             }
+        }
+        if q.exclude_waiting {
+            sql.push_str(" AND NOT (status IN ('queued','failed') AND audio_path IS NOT NULL)");
         }
         sql.push_str(" ORDER BY created_at DESC LIMIT ? OFFSET ?");
         args.push(Box::new(q.limit.unwrap_or(100).clamp(1, 1000)));

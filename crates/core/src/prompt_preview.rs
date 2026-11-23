@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::apps::{AppCategory, AppInfo};
 use crate::dictionary::DictEntry;
 use crate::modes::{self, Mode};
-use crate::pipeline::{cleanup_context_for, cleanup_system_blocks, command_system_blocks, CaptureContext};
+use crate::pipeline::{natural_mode, cleanup_context_for, cleanup_system_blocks, command_system_blocks, CaptureContext};
 use crate::prompts::{self, CleanupLevel};
 use crate::settings::Settings;
 
@@ -50,6 +50,11 @@ pub struct TransformPreview {
 pub struct PromptPreview {
     pub mode_id: String,
     pub mode_name: String,
+    /// True when the chosen style was Auto and the app type made Wisper use another style;
+    /// `mode_id` / `mode_name` then name the style actually sent.
+    pub auto_picked: bool,
+    /// The style that was chosen in the picker.
+    pub chosen_mode_name: String,
     /// False when the cleanup level is "no AI edits": then none of this is sent.
     pub ai_used: bool,
     pub level: CleanupLevel,
@@ -102,7 +107,14 @@ pub fn sample_for(cat: Option<AppCategory>) -> PreviewSample {
 
 /// Builds the preview from the same functions `Engine::llm_cleanup` and `run_instruction` use.
 pub fn build(settings: &Settings, modes_list: &[Mode], entries: &[DictEntry], req: &PreviewRequest, sample: &PreviewSample) -> Option<PromptPreview> {
-    let mode = modes::find(modes_list, &req.mode_id)?;
+    let chosen = modes::find(modes_list, &req.mode_id)?;
+    // Same rule as the pipeline's choose_mode: with Auto as the default style, the kind of
+    // app picks its natural style.
+    let swapped = (chosen.id == modes::AUTO && settings.default_mode == modes::AUTO)
+        .then(|| natural_mode(modes_list, sample.ctx.app.category))
+        .flatten()
+        .filter(|m| m.id != chosen.id);
+    let mode = swapped.unwrap_or(chosen);
     let level = req.cleanup_level.unwrap_or(settings.cleanup_level);
     let excluded = settings.context_excluded_apps.iter().any(|a| a.eq_ignore_ascii_case(&sample.ctx.app.exe));
     let use_ctx = settings.context_awareness && !excluded;
@@ -142,6 +154,8 @@ pub fn build(settings: &Settings, modes_list: &[Mode], entries: &[DictEntry], re
     Some(PromptPreview {
         mode_id: mode.id.clone(),
         mode_name: mode.name.clone(),
+        auto_picked: swapped.is_some(),
+        chosen_mode_name: chosen.name.clone(),
         ai_used: level != CleanupLevel::None,
         level,
         level_text: prompts::level_text(level).to_string(),
@@ -177,11 +191,17 @@ mod tests {
         let none = build(&s, &m, &[], &req("auto", None), &sample_for(None)).unwrap();
         let email = build(&s, &m, &[], &req("auto", Some(AppCategory::Email)), &sample_for(Some(AppCategory::Email))).unwrap();
         assert_eq!(none.base_system, email.base_system);
-        assert_eq!(none.mode_system, email.mode_system);
+        // Auto in an email app is replaced by the Email style (as the pipeline does).
+        assert_ne!(none.mode_system, email.mode_system);
         assert!(!none.user_message.contains("will be inserted into"));
         assert!(email.user_message.contains("Gmail, an email app"));
         let email_row = email.app_types.iter().find(|a| a.category == AppCategory::Email).unwrap();
         assert_eq!(email_row.auto_mode_name, "Email");
+        // Auto in an email app sends the Email style, and says so.
+        assert!(email.auto_picked);
+        assert_eq!(email.mode_id, "email");
+        assert!(email.mode_system.contains("Format for this dictation: Email"));
+        assert!(!none.auto_picked);
     }
 
     #[test]

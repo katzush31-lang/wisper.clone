@@ -8,7 +8,7 @@ import { useSettings } from "../useSettings";
 import HistoryDetail from "./home/HistoryDetail";
 import HistoryRow from "./home/HistoryRow";
 import WaitingRow from "./home/WaitingRow";
-import { keysMissing as needKeys, type KeyState } from "./home/helpers";
+import { isWaiting, keysMissing as needKeys, type KeyState } from "./home/helpers";
 import "./home.css";
 
 const PAGE = 50;
@@ -61,7 +61,7 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
     // as one row at the top instead of one row each.
     const grouped = !text && !day;
     api
-      .listHistory({ limit: limit + 1, ...(text ? { text } : {}), ...range, ...(grouped ? { excludeStatus: ["queued", "failed"] } : {}) })
+      .listHistory({ limit: limit + 1, ...(text ? { text } : {}), ...range, ...(grouped ? { excludeWaiting: true } : {}) })
       .then((rows) => {
         setHasMore(rows.length > limit);
         setItems(rows.slice(0, limit));
@@ -70,7 +70,7 @@ export default function HomePage({ onOpenSettings }: { onOpenSettings: (section?
       .finally(() => setLoaded(true));
     if (grouped) {
       Promise.all([api.listHistory({ status: "queued", limit: 500 }), api.listHistory({ status: "failed", limit: 500 })])
-        .then(([a, b]) => setWaiting([...a, ...b].sort((x, y) => y.createdAt - x.createdAt)))
+        .then(([a, b]) => setWaiting([...a, ...b].filter(isWaiting).sort((x, y) => y.createdAt - x.createdAt)))
         .catch(() => {});
       api
         .listHistory({ status: "silent", limit: 200 })

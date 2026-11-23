@@ -595,11 +595,21 @@ async fn prompt_preview_equals_what_cleanup_sends() {
     let mut st = h.engine.settings();
     st.providers.fast_cleanup.skip_ai_for_tiny = false;
     h.engine.set_settings(st);
-    for (mode, cat) in [("email", Some(apps::AppCategory::Email)), ("casual", Some(apps::AppCategory::PersonalChat)), ("auto", None)] {
+    // "auto" is not forced: the pipeline's own choose_mode picks the style from the app type.
+    let cases = [
+        ("email", Some(apps::AppCategory::Email)),
+        ("casual", Some(apps::AppCategory::PersonalChat)),
+        ("auto", None),
+        ("auto", Some(apps::AppCategory::Email)),
+        ("auto", Some(apps::AppCategory::PersonalChat)),
+        ("auto", Some(apps::AppCategory::AiAssistant)),
+        ("auto", Some(apps::AppCategory::Document)),
+    ];
+    for (mode, cat) in cases {
         h.llm.requests.lock().unwrap().clear();
         let sample = sample_for(cat);
         // Same text the preview shows, after the (here no-op) dictionary pass.
-        let r = h.engine.clean_text_for(&sample.transcript, &sample.ctx, Some(mode), None).await;
+        let r = h.engine.clean_text_for(&sample.transcript, &sample.ctx, (mode != "auto").then_some(mode), None).await;
         assert!(r.error.is_none());
         let sent = h.llm.requests.lock().unwrap()[0].clone();
         let st = h.engine.settings();
@@ -611,6 +621,60 @@ async fn prompt_preview_equals_what_cleanup_sends() {
         assert_eq!(sent.user, p.user_message, "{mode}");
         assert!(sent.system[0].text.contains("zechus (may come through as: Zeus"));
     }
+}
+
+/// A saved recording that failed for `kind`, with the given status and age.
+async fn failed_item(h: &Harness, kind: ErrorKind, status: Status, created_at: i64) -> String {
+    let err = ProviderError::new(kind, "OpenAI", "x");
+    for _ in 0..4 {
+        h.stt.script.lock().unwrap().push_back(Err(err.clone()));
+    }
+    let rec = record(h, ctx("notepad.exe", ""), &[(true, 1500), (false, 300)]);
+    let id = rec.id.clone();
+    let _ = h.engine.process(rec, &no_progress()).await;
+    h.stt.script.lock().unwrap().clear();
+    h.engine.db.set_status(&id, status).unwrap();
+    h.engine.db.set_created_at_for_test(&id, created_at);
+    id
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn retry_waiting_goes_queued_first_then_failed_oldest_first() {
+    let h = harness();
+    let f_old = failed_item(&h, ErrorKind::Auth, Status::Failed, 100).await;
+    let q_new = failed_item(&h, ErrorKind::Auth, Status::Queued, 500).await;
+    let f_new = failed_item(&h, ErrorKind::Auth, Status::Failed, 300).await;
+    let q_old = failed_item(&h, ErrorKind::Auth, Status::Queued, 400).await;
+    for _ in 0..4 {
+        h.stt.script.lock().unwrap().push_back(Ok("fine now".into()));
+    }
+    let r = crate::waiting::retry_waiting(&h.engine).await;
+    assert_eq!(r.attempted, vec![q_old, q_new, f_old, f_new]);
+    assert_eq!((r.done, r.still_waiting), (4, 0));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn retry_waiting_stops_when_still_offline_and_skips_items_without_audio() {
+    let h = harness();
+    let first = failed_item(&h, ErrorKind::Auth, Status::Queued, 100).await;
+    let second = failed_item(&h, ErrorKind::Auth, Status::Queued, 200).await;
+    let gone = failed_item(&h, ErrorKind::Auth, Status::Failed, 50).await;
+    // The third one's audio has been deleted: it can never succeed, so it isn't attempted.
+    let path = h.engine.db.get(&gone).unwrap().unwrap().audio_path.unwrap();
+    let _ = std::fs::remove_file(&path);
+    h.engine.db.set_audio_path(&gone, None).unwrap();
+    let offline = ProviderError::new(ErrorKind::Network, "OpenAI", "dns");
+    for _ in 0..6 {
+        h.stt.script.lock().unwrap().push_back(Err(offline.clone()));
+    }
+    let r = crate::waiting::retry_waiting(&h.engine).await;
+    assert_eq!(r.attempted, vec![first]);
+    assert_eq!((r.done, r.still_waiting), (0, 2));
+    assert!(!r.attempted.contains(&second) && !r.attempted.contains(&gone));
+    // It is also listed as an ordinary row, not as waiting.
+    let shown = h.engine.db.list(&crate::db::HistoryQuery { exclude_waiting: true, ..Default::default() }).unwrap();
+    assert!(shown.iter().any(|i| i.id == gone));
+    assert!(shown.iter().all(|i| i.id != second));
 }
 
 // ---------------------------------------------------------------- fast model for short dictations

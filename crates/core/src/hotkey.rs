@@ -522,42 +522,52 @@ impl GestureEngine {
     /// Brings our idea of which keys are held in line with the OS, which knows better when we
     /// missed a key-down or key-up: focus moved to an admin window or the lock screen, or
     /// Windows dropped the hook for a moment. `os_down(code)` asks the OS whether a key
-    /// (generic modifier codes for modifiers) is physically held.
+    /// (generic modifier codes for modifiers) is held. `gap_at` is when the hook last
+    /// demonstrably missed key events (0 = never).
     ///
     /// - A modifier the OS says is held is added (its press was missed), so the next key
     ///   completes the combo.
-    /// - A key the OS says is up, with no event for `stale_key_ms`, is dropped. Keys we
-    ///   swallowed never look held to the OS, so for those only the silence counts (a held key
-    ///   keeps auto-repeating), except while they are being held to talk (auto-repeat can be
-    ///   switched off); a swallowed mouse button (no auto-repeat) is never dropped.
+    /// - A key with no event for `stale_key_ms` may be dropped:
+    ///   - a key we swallowed (the OS never saw it, so only silence counts: held keys
+    ///     auto-repeat) — except the key held to talk (auto-repeat can be off; mouse buttons
+    ///     never repeat);
+    ///   - any other key the OS says is up — except a key of the shortcut in use, unless the
+    ///     hook missed events after that key's last event. The OS can report keys up that are
+    ///     still held: Remote Desktop, Hyper-V and Citrix windows keep keys from the rest of
+    ///     Windows, and only the last key auto-repeats. Finishing on that would cut the
+    ///     dictation short; the real key-up finishes it instead.
     ///
-    /// Dropping keys finishes a hold the user already let go of, and ends "wait until the
-    /// keys are released" states, so the next press of the shortcut works. Called by the
-    /// hook before every key-down and by the app every half second.
-    pub fn sync_keys(&mut self, os_down: &dyn Fn(u32) -> bool, now: u64) -> Vec<Action> {
+    /// Dropping a key of the shortcut in use counts as releasing it (so a hold finishes), and
+    /// once nothing is held, "wait until the keys are released" states end, so the next press
+    /// works. Called by the hook before every key-down and by the app every half second.
+    pub fn sync_keys(&mut self, os_down: &dyn Fn(u32) -> bool, now: u64, gap_at: u64) -> Vec<Action> {
         for m in vk::MODIFIERS {
             if !self.pressed.contains(&m) && os_down(m) {
                 self.pressed.push(m);
                 self.touch(m, now);
             }
         }
-        let stale = |k: u32, me: &Self| now.saturating_sub(me.touched_at(k)) >= me.timing.stale_key_ms;
-        let gone: Vec<u32> = self
-            .pressed
-            .iter()
-            .copied()
-            .filter(|&k| {
-                if self.swallowed.contains(&k) {
-                    let held_to_talk = matches!(self.state, State::Holding { .. }) && self.active.as_ref().is_some_and(|(_, c)| c.contains(k));
-                    !vk::is_mouse(k) && !held_to_talk && stale(k, self)
-                } else {
-                    !os_down(k) && stale(k, self)
-                }
-            })
-            .collect();
+        let gone: Vec<u32> = self.pressed.iter().copied().filter(|&k| self.can_forget(k, os_down, now, gap_at)).collect();
         let mut out = Outcome::default();
         self.drop_keys(&gone, now, &mut out);
         out.actions
+    }
+
+    fn can_forget(&self, k: u32, os_down: &dyn Fn(u32) -> bool, now: u64, gap_at: u64) -> bool {
+        let last = self.touched_at(k);
+        if now.saturating_sub(last) < self.timing.stale_key_ms {
+            return false;
+        }
+        let in_shortcut = self.active.as_ref().is_some_and(|(_, c)| c.contains(k));
+        if self.swallowed.contains(&k) {
+            let held_to_talk = in_shortcut && matches!(self.state, State::Holding { .. });
+            return !held_to_talk;
+        }
+        if os_down(k) {
+            return false;
+        }
+        let missed_since = gap_at != 0 && gap_at >= last;
+        !in_shortcut || missed_since
     }
 
     /// Whether one of the recording shortcuts (dictate, hands-free, command) is fully held
@@ -1181,7 +1191,7 @@ mod tests {
         let mut e = engine();
         e.key_down(CTRL, 0);
         // Key-up for Ctrl was lost (e.g. lock screen). OS says nothing is down.
-        e.sync_keys(&|_| false, 5000);
+        e.sync_keys(&|_| false, 5000, 0);
         let a = without_suppress(press(&mut e, &[CTRL, WIN], 5100));
         assert_eq!(a.len(), 1);
     }
@@ -1206,11 +1216,12 @@ mod tests {
         false
     }
 
-    /// Like the hook: ask the OS (here: `held`) before every key-down.
-    fn press_synced(e: &mut GestureEngine, keys: &[u32], held: &[u32], t: u64) -> Vec<Action> {
+    /// Like the hook: ask the OS (here: `held`) before every key-down. `gap` = when the hook
+    /// last missed events (0 = never).
+    fn press_synced(e: &mut GestureEngine, keys: &[u32], held: &[u32], gap: u64, t: u64) -> Vec<Action> {
         let mut acts = vec![];
         for &k in keys {
-            acts.extend(e.sync_keys(&|c| held.contains(&c), t));
+            acts.extend(e.sync_keys(&|c| held.contains(&c), t, gap));
             acts.extend(e.key_down(k, t).actions);
         }
         acts
@@ -1219,14 +1230,27 @@ mod tests {
     #[test]
     fn hands_free_finishes_even_if_its_key_ups_were_missed() {
         // Double-tap for hands-free, then focus moves to an admin window before the keys are
-        // let go, so their key-ups never arrive. Later the user presses the shortcut to finish.
+        // let go, so their key-ups never arrive (the watchdog notices the gap at 1000). Later
+        // the user presses the shortcut to finish.
         let mut e = engine();
         press(&mut e, &[CTRL, WIN], 0);
         release(&mut e, &[WIN, CTRL], 100);
         assert_eq!(without_suppress(press(&mut e, &[CTRL, WIN], 300)), vec![Action::BecameHandsFree]);
-        // (key-ups lost)
-        let a = without_suppress(press_synced(&mut e, &[CTRL, WIN], &[], 8000));
+        let a = without_suppress(press_synced(&mut e, &[CTRL, WIN], &[], 1000, 8000));
         assert_eq!(a, vec![Action::Finish]);
+    }
+
+    #[test]
+    fn missed_key_ups_without_a_detected_gap_cost_one_press_at_most() {
+        // Lock screen etc.: nothing measurable. The OS state alone doesn't release the shortcut
+        // in use, so the first press only completes the old release; the next one finishes.
+        let mut e = engine();
+        press(&mut e, &[CTRL, WIN], 0);
+        release(&mut e, &[WIN, CTRL], 100);
+        press(&mut e, &[CTRL, WIN], 300);
+        assert!(without_suppress(press_synced(&mut e, &[CTRL, WIN], &[], 0, 8000)).is_empty());
+        release(&mut e, &[WIN, CTRL], 8100);
+        assert_eq!(without_suppress(press_synced(&mut e, &[CTRL, WIN], &[], 0, 9000)), vec![Action::Finish]);
     }
 
     #[test]
@@ -1254,24 +1278,45 @@ mod tests {
     fn hold_whose_release_was_missed_finishes_on_next_press_without_restarting() {
         let mut e = engine();
         press(&mut e, &[CTRL, WIN], 0);
-        // Released while an admin window had focus: key-ups lost. The user presses again.
-        let a = without_suppress(press_synced(&mut e, &[CTRL, WIN], &[], 6000));
+        // Released while an admin window had focus (gap noticed at 2000). The user presses again.
+        let a = without_suppress(press_synced(&mut e, &[CTRL, WIN], &[], 2000, 6000));
         assert_eq!(a, vec![Action::Finish], "the press finishes the old recording and doesn't start a new one");
         e.set_processing(true);
         release(&mut e, &[WIN, CTRL], 6100);
         e.set_processing(false);
-        let a = without_suppress(press_synced(&mut e, &[CTRL, WIN], &[], 9000));
+        let a = without_suppress(press_synced(&mut e, &[CTRL, WIN], &[], 2000, 9000));
         assert_eq!(a, vec![Action::Start { kind: RecordingKind::Dictation, hands_free: false }]);
     }
 
     #[test]
-    fn periodic_sync_finishes_a_hold_that_was_let_go() {
+    fn os_key_state_alone_never_cuts_a_hold_short() {
+        // Remote Desktop / Hyper-V / Citrix full screen: the OS reports Ctrl and Win up while
+        // they're held, and only Win (the last key) auto-repeats. No gap was detected.
         let mut e = engine();
         press(&mut e, &[CTRL, WIN], 0);
-        // Too soon: the OS may simply not have recorded the press yet.
-        assert!(e.sync_keys(&os_none, 500).is_empty());
-        assert!(e.is_recording());
-        assert_eq!(e.sync_keys(&os_none, 3000), vec![Action::Finish]);
+        for t in (500..=12_000).step_by(500) {
+            assert!(e.sync_keys(&os_none, t, 0).is_empty(), "periodic sync at {t}");
+            if t % 1000 == 0 {
+                // Win auto-repeat, with the hook's own sync first.
+                assert!(without_suppress(press_synced(&mut e, &[WIN], &[], 0, t)).is_empty(), "repeat at {t}");
+            }
+        }
+        assert!(e.is_recording(), "still recording after 12 s");
+        assert_eq!(release(&mut e, &[WIN, CTRL], 12_300), vec![Action::Finish]);
+    }
+
+    #[test]
+    fn periodic_sync_finishes_a_hold_when_the_hook_missed_events() {
+        let mut e = engine();
+        press(&mut e, &[CTRL, WIN], 0);
+        // A gap before the keys' last events proves nothing about them.
+        assert!(e.sync_keys(&os_none, 3000, 0).is_empty());
+        // Too soon after the press: the OS may not have recorded it yet.
+        let mut e2 = engine();
+        press(&mut e2, &[CTRL, WIN], 0);
+        assert!(e2.sync_keys(&os_none, 500, 400).is_empty());
+        // Gap after the press, key silent and up: the release was missed.
+        assert_eq!(e.sync_keys(&os_none, 3500, 1000), vec![Action::Finish]);
         assert!(!e.is_recording());
     }
 
@@ -1279,7 +1324,7 @@ mod tests {
     fn sync_keeps_keys_the_os_says_are_held() {
         let mut e = engine();
         press(&mut e, &[CTRL, WIN], 0);
-        assert!(e.sync_keys(&|k| k == CTRL || k == WIN, 60_000).is_empty());
+        assert!(e.sync_keys(&|k| k == CTRL || k == WIN, 60_000, 30_000).is_empty());
         assert!(e.is_recording());
         assert_eq!(release(&mut e, &[WIN, CTRL], 61_000), vec![Action::Finish]);
     }
@@ -1288,7 +1333,7 @@ mod tests {
     fn missed_modifier_press_is_picked_up_from_the_os() {
         // Ctrl went down while the hook wasn't seeing keys (admin window, hook re-install).
         let mut e = engine();
-        let a = without_suppress(press_synced(&mut e, &[WIN], &[CTRL], 1000));
+        let a = without_suppress(press_synced(&mut e, &[WIN], &[CTRL], 0, 1000));
         assert_eq!(a, vec![Action::Start { kind: RecordingKind::Dictation, hands_free: false }]);
     }
 
@@ -1301,14 +1346,14 @@ mod tests {
         release(&mut e, &[WIN, CTRL], 100); // Space's key-up lost
         // Space still auto-repeating means it's held: kept.
         e.key_down(SPACE, 900);
-        assert!(e.sync_keys(&os_none, 1200).is_empty());
+        assert!(e.sync_keys(&os_none, 1200, 0).is_empty());
         assert!(e.is_recording());
-        let a = without_suppress(press_synced(&mut e, &[CTRL, WIN], &[], 5000));
+        let a = without_suppress(press_synced(&mut e, &[CTRL, WIN], &[], 0, 5000));
         assert_eq!(a, vec![Action::Finish], "Ctrl+Win finishes hands-free");
         e.set_processing(true);
         release(&mut e, &[WIN, CTRL], 5100);
         e.set_processing(false);
-        let a = without_suppress(press_synced(&mut e, &[CTRL, WIN], &[], 9000));
+        let a = without_suppress(press_synced(&mut e, &[CTRL, WIN], &[], 0, 9000));
         assert_eq!(a, vec![Action::Start { kind: RecordingKind::Dictation, hands_free: false }], "dictate, not hands-free");
     }
 
@@ -1318,8 +1363,9 @@ mod tests {
         cfg.dictate = vec![KeyCombo::new(&[CAPSLOCK])];
         let mut e = GestureEngine::new(cfg, Timing::default());
         assert!(e.key_down(CAPSLOCK, 0).swallow);
-        // No repeats (auto-repeat switched off); the OS never saw the swallowed press.
-        assert!(e.sync_keys(&os_none, 5000).is_empty());
+        // No repeats (auto-repeat switched off); the OS never saw the swallowed press. Even a
+        // detected gap can't tell us anything about a swallowed key.
+        assert!(e.sync_keys(&os_none, 5000, 2000).is_empty());
         assert!(e.is_recording());
         assert_eq!(e.key_up(CAPSLOCK, 6000).actions, vec![Action::Finish]);
     }
@@ -1330,8 +1376,21 @@ mod tests {
         e.start_external(RecordingKind::Dictation, 0);
         assert_eq!(without_suppress(press(&mut e, &[CTRL, WIN], 5000)), vec![Action::Finish]);
         // The app never confirmed processing (e.g. the recording had already ended) and the
-        // key-ups were lost. The next press must still work.
-        let a = without_suppress(press_synced(&mut e, &[CTRL, WIN], &[], 9000));
+        // key-ups were lost (gap at 6000). The next press must still work.
+        let a = without_suppress(press_synced(&mut e, &[CTRL, WIN], &[], 6000, 9000));
+        assert_eq!(a, vec![Action::Start { kind: RecordingKind::Dictation, hands_free: false }]);
+    }
+
+    #[test]
+    fn wait_release_without_a_detected_gap_waits_for_a_real_release() {
+        let mut e = engine();
+        e.start_external(RecordingKind::Dictation, 0);
+        assert_eq!(without_suppress(press(&mut e, &[CTRL, WIN], 5000)), vec![Action::Finish]);
+        // OS says up, but keys may be held in a remote-desktop window: don't start anything.
+        assert!(e.sync_keys(&os_none, 9000, 0).is_empty());
+        assert!(without_suppress(press_synced(&mut e, &[CTRL, WIN], &[], 0, 9000)).is_empty());
+        release(&mut e, &[WIN, CTRL], 9100);
+        let a = without_suppress(press_synced(&mut e, &[CTRL, WIN], &[], 0, 9500));
         assert_eq!(a, vec![Action::Start { kind: RecordingKind::Dictation, hands_free: false }]);
     }
 
@@ -1445,15 +1504,17 @@ mod tests {
         let d = e.key_down(MOUSE_MIDDLE, 50);
         assert!(d.swallow);
         assert_eq!(without_suppress(d.actions), vec![Action::Start { kind: RecordingKind::Dictation, hands_free: false }]);
-        // Held for a while; the periodic sync must not drop the (swallowed) button.
-        assert!(e.sync_keys(&|k| k == CTRL, 3000).is_empty());
+        // Held for a while (no auto-repeat for mouse buttons); the sync must not drop the
+        // swallowed button that is being held to talk, even after a gap.
+        assert!(e.sync_keys(&|k| k == CTRL, 3000, 0).is_empty());
+        assert!(e.sync_keys(&|k| k == CTRL, 15_000, 10_000).is_empty());
         assert!(e.is_recording());
-        let u = e.key_up(MOUSE_MIDDLE, 4000);
+        let u = e.key_up(MOUSE_MIDDLE, 16_000);
         assert!(u.swallow);
         assert_eq!(u.actions, vec![Action::Finish]);
-        e.key_up(CTRL, 4050);
+        e.key_up(CTRL, 16_050);
         // Without Ctrl, the middle button is an ordinary click.
-        let (d, u) = click(&mut e, MOUSE_MIDDLE, 6000);
+        let (d, u) = click(&mut e, MOUSE_MIDDLE, 18_000);
         assert!(!d.swallow && !u.swallow && d.actions.is_empty());
     }
 
@@ -1525,6 +1586,31 @@ mod tests {
         let (d, _) = click(&mut e, MOUSE_MIDDLE, 200);
         assert!(d.swallow);
         assert_eq!(d.actions, vec![Action::Busy]);
+    }
+
+    #[test]
+    fn swallowed_button_whose_release_was_missed_is_forgotten_after_double_click_start() {
+        let mut e = mouse_engine(KeyCombo::double_click(MOUSE_MIDDLE));
+        click(&mut e, MOUSE_MIDDLE, 0);
+        let d = e.key_down(MOUSE_MIDDLE, 200); // second click swallowed; its button-up is lost
+        assert!(d.swallow);
+        assert!(e.is_recording());
+        assert!(e.sync_keys(&os_none, 1500, 0).is_empty());
+        // Ctrl+Win must still finish (not be seen as Middle + Ctrl + Win, nor eaten as "releasing").
+        let a = without_suppress(press_synced(&mut e, &[CTRL, WIN], &[], 0, 5000));
+        assert_eq!(a, vec![Action::Finish]);
+    }
+
+    #[test]
+    fn swallowed_button_whose_release_was_missed_doesnt_break_keyboard_shortcuts() {
+        let mut cfg = HotkeyConfig::defaults();
+        cfg.paste_last = vec![KeyCombo::new(&[ALT, MOUSE_X1])];
+        let mut e = GestureEngine::new(cfg, Timing::default());
+        e.key_down(ALT, 0);
+        assert!(e.key_down(MOUSE_X1, 50).swallow); // one-shot; X1's up is lost
+        e.key_up(ALT, 100);
+        let a = without_suppress(press_synced(&mut e, &[CTRL, WIN], &[], 0, 3000));
+        assert_eq!(a, vec![Action::Start { kind: RecordingKind::Dictation, hands_free: false }]);
     }
 
     #[test]

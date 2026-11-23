@@ -41,6 +41,9 @@ export type AppCategory = "email" | "workChat" | "personalChat" | "aiAssistant" 
 export interface PromptPreview {
   modeId: string;
   modeName: string;
+  /** the chosen style was Auto and the app type made Wisper use `modeName` instead */
+  autoPicked: boolean;
+  chosenModeName: string;
   /** false when cleanup is set to "no AI edits": none of this is sent */
   aiUsed: boolean;
   level: CleanupLevel;
@@ -218,6 +221,8 @@ export interface HistoryQuery {
   status?: HistoryStatus;
   /** leave out items with any of these statuses */
   excludeStatus?: HistoryStatus[];
+  /** leave out recordings waiting to be processed (queued/failed with their audio still saved) */
+  excludeWaiting?: boolean;
   limit?: number;
   offset?: number;
 }
