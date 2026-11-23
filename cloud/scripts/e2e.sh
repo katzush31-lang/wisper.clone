@@ -8,6 +8,8 @@
 # Needs: node/npm (cloud/node_modules installed: `cd cloud && npm ci`), openssl, cargo, curl.
 # Temporary files: cloud/.dev.vars (git-ignored, deleted on exit) and a temp dir (deleted on exit).
 set -uo pipefail
+# Local traffic must never go through a proxy.
+export NO_PROXY="127.0.0.1,localhost${NO_PROXY:+,$NO_PROXY}" no_proxy="127.0.0.1,localhost${no_proxy:+,$no_proxy}"
 
 CLOUD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_DIR="$(cd "$CLOUD_DIR/.." && pwd)"
@@ -18,12 +20,21 @@ STATE="$TMP/state"
 DEVVARS="$CLOUD_DIR/.dev.vars"
 WRANGLER_PID=""
 
+descendants() { # all child processes of $1, recursively
+  local c
+  for c in $(pgrep -P "$1" 2>/dev/null); do echo "$c"; descendants "$c"; done
+}
+
 cleanup() {
   if [ -n "$WRANGLER_PID" ]; then
-    # wrangler spawns workerd children: kill the whole process group.
-    kill -TERM -- "-$WRANGLER_PID" 2>/dev/null || kill -TERM "$WRANGLER_PID" 2>/dev/null
-    sleep 1
-    kill -KILL -- "-$WRANGLER_PID" 2>/dev/null || true
+    # wrangler spawns workerd: stop the whole tree, even if wrangler already exited.
+    local kids; kids="$(descendants "$WRANGLER_PID")"
+    kill -TERM -- "-$WRANGLER_PID" 2>/dev/null; kill -TERM "$WRANGLER_PID" $kids 2>/dev/null
+    for _ in 1 2 3 4 5; do
+      curl -s -o /dev/null -m1 "http://127.0.0.1:$PORT/" || break
+      sleep 1
+    done
+    kill -KILL -- "-$WRANGLER_PID" 2>/dev/null; kill -KILL "$WRANGLER_PID" $kids 2>/dev/null
   fi
   rm -f "$DEVVARS"
   rm -rf "$TMP"
