@@ -4,7 +4,7 @@ import { randomToken, sha256B64url, timingSafeEqual } from "./crypto";
 import { exec, one, stmt } from "./db";
 import { exchangeCodeForIdentity, googleAuthUrl } from "./google";
 import {
-  HttpError, htmlPage, json, noContent, readJsonBody, redirect, requireString,
+  HttpError, htmlPage, json, noContent, readJsonBody, redirect, requireString, revokedError,
 } from "./http";
 import { ACCESS_TOKEN_TTL_SECONDS, signAccessToken } from "./tokens";
 import type { Deps, Env } from "./types";
@@ -74,7 +74,8 @@ export async function googleCallback(req: Request, env: Env, deps: Required<Deps
   try {
     identity = await exchangeCodeForIdentity(env, deps.fetch, deps.googleTokenUrl, code, `${url.origin}/auth/google/callback`);
   } catch (e) {
-    if (e instanceof HttpError) return htmlPage(e.message, e.status);
+    // The port is known here, so send the browser back and let the app stop waiting.
+    if (e instanceof HttpError) return loopback("error=google_failed");
     throw e;
   }
 
@@ -149,7 +150,7 @@ export async function exchangeLoginCode(req: Request, env: Env): Promise<Respons
     // Keep at most MAX_ACTIVE_DEVICES: retire the least recently used ones.
     stmt(
       env.DB,
-      `UPDATE devices SET revoked = 1
+      `UPDATE devices SET revoked = 1, revoked_reason = 'removed'
        WHERE user_id = ? AND revoked = 0 AND id IN (
          SELECT id FROM devices WHERE user_id = ? AND revoked = 0
          ORDER BY COALESCE(last_seen, created_at) DESC LIMIT -1 OFFSET ?)`,
@@ -173,30 +174,34 @@ export async function refresh(req: Request, env: Env): Promise<Response> {
   const hash = await sha256B64url(presented);
   const now = Date.now();
   const invalid = new HttpError(401, "invalid", "Please sign in again.");
-  const revoked = new HttpError(401, "revoked", "This computer was signed out. Please sign in again.");
 
   // Pre-auth lookup: the refresh token itself is the credential, so there is no user id yet.
   // (Lookup is by SHA-256 of a 256-bit random value; there is nothing useful to time.)
   const dev = await one<{
-    id: string; user_id: string; revoked: number; created_at: number | null; last_seen: number | null;
+    id: string; user_id: string; revoked: number; revoked_reason: string | null; created_at: number | null; last_seen: number | null;
     email: string; name: string | null;
   }>(
     env.DB,
-    `SELECT d.id, d.user_id, d.revoked, d.created_at, d.last_seen, u.email, u.name
+    `SELECT d.id, d.user_id, d.revoked, d.revoked_reason, d.created_at, d.last_seen, u.email, u.name
      FROM devices d JOIN users u ON u.id = d.user_id WHERE d.refresh_hash = ?`,
     hash,
   );
 
   if (!dev) {
     // An already-rotated token being replayed means it was copied: revoke that device.
-    const reused = await one<{ id: string }>(env.DB, "SELECT id FROM devices WHERE prev_refresh_hash = ?", hash);
+    const reused = await one<{ id: string; revoked: number; revoked_reason: string | null }>(
+      env.DB,
+      "SELECT id, revoked, revoked_reason FROM devices WHERE prev_refresh_hash = ?",
+      hash,
+    );
     if (reused) {
-      await exec(env.DB, "UPDATE devices SET revoked = 1 WHERE id = ?", reused.id);
-      throw revoked;
+      if (reused.revoked) throw revokedError(reused.revoked_reason); // keep the original reason
+      await exec(env.DB, "UPDATE devices SET revoked = 1, revoked_reason = 'reuse' WHERE id = ? AND revoked = 0", reused.id);
+      throw revokedError("reuse");
     }
     throw invalid;
   }
-  if (dev.revoked) throw revoked;
+  if (dev.revoked) throw revokedError(dev.revoked_reason);
   if (now - (dev.last_seen ?? dev.created_at ?? 0) > REFRESH_TTL_MS) throw invalid;
 
   const next = randomToken();
@@ -216,6 +221,6 @@ export async function refresh(req: Request, env: Env): Promise<Response> {
 
 export async function logout(req: Request, env: Env): Promise<Response> {
   const { userId, deviceId } = await requireUser(req, env);
-  await exec(env.DB, "UPDATE devices SET revoked = 1 WHERE id = ? AND user_id = ?", deviceId, userId);
+  await exec(env.DB, "UPDATE devices SET revoked = 1, revoked_reason = 'removed' WHERE id = ? AND user_id = ? AND revoked = 0", deviceId, userId);
   return noContent();
 }

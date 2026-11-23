@@ -172,8 +172,8 @@ describe("Google login with PKCE", () => {
         const start = await app.call(`/auth/google/start?challenge=${challenge}&port=${PORT}`);
         const state = new URL(start.headers.get("location")!).searchParams.get("state")!;
         const cb = await app.call(`/auth/google/callback?code=${app.google.issue({ sub: "s", email: "e@example.com", ...claims })}&state=${state}`);
-        expect(cb.status).toBe(403);
-        expect(cb.headers.get("location")).toBeNull();
+        expect(cb.status).toBe(302);
+        expect(cb.headers.get("location")).toBe(`http://127.0.0.1:${PORT}/callback?error=google_failed`);
         expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM users").first<any>()).toEqual({ n: 0 });
       });
     }
@@ -184,6 +184,16 @@ describe("Google login with PKCE", () => {
       expect(loc.searchParams.get("code")).toBeTruthy();
     });
 
+    it("redirects to the loopback with google_failed when Google is down (network error)", async () => {
+      const app = new App();
+      app.google.fetch = async () => { throw new Error("offline"); };
+      const { challenge } = await pkce();
+      const start = await app.call(`/auth/google/start?challenge=${challenge}&port=${PORT}`);
+      const state = new URL(start.headers.get("location")!).searchParams.get("state")!;
+      const cb = await app.call(`/auth/google/callback?code=whatever&state=${state}`);
+      expect(cb.headers.get("location")).toBe(`http://127.0.0.1:${PORT}/callback?error=google_failed`);
+    });
+
     it("reports a Google failure without creating anything", async () => {
       const app = new App();
       app.google.fail = true;
@@ -191,7 +201,11 @@ describe("Google login with PKCE", () => {
       const start = await app.call(`/auth/google/start?challenge=${challenge}&port=${PORT}`);
       const state = new URL(start.headers.get("location")!).searchParams.get("state")!;
       const cb = await app.call(`/auth/google/callback?code=whatever&state=${state}`);
-      expect(cb.status).toBe(502);
+      expect(cb.status).toBe(302);
+      expect(cb.headers.get("location")).toBe(`http://127.0.0.1:${PORT}/callback?error=google_failed`);
+      // The login request is spent: it cannot be completed afterwards.
+      const again = await app.call(`/auth/google/callback?code=${app.google.issue({ sub: "s", email: "e@example.com" })}&state=${state}`);
+      expect(again.status).toBe(302);
     });
   });
 });
@@ -401,5 +415,59 @@ describe("router and limits", () => {
     // /v1 is not behind this limiter.
     await app.call("/v1/me");
     expect(seen).toHaveLength(3);
+  });
+});
+
+describe("revocation reasons", () => {
+  const reasonOf = async (res: Response) => { const j = await jsonOf(res); return [res.status, j.error, j.reason]; };
+
+  it("reuse of a rotated refresh token reports reason=reuse, on refresh and on bearer calls", async () => {
+    const app = new App();
+    const s = await app.signIn();
+    const next = await jsonOf(await app.call("/auth/refresh", { body: { refresh_token: s.refresh } }));
+    expect(await reasonOf(await app.call("/auth/refresh", { body: { refresh_token: s.refresh } }))).toEqual([401, "revoked", "reuse"]);
+    expect(await reasonOf(await app.call("/auth/refresh", { body: { refresh_token: next.refresh_token } }))).toEqual([401, "revoked", "reuse"]);
+    expect(await reasonOf(await app.call("/v1/me", { token: next.access_token }))).toEqual([401, "revoked", "reuse"]);
+    // Replaying again does not rewrite the reason.
+    expect(await reasonOf(await app.call("/auth/refresh", { body: { refresh_token: s.refresh } }))).toEqual([401, "revoked", "reuse"]);
+  });
+
+  it("logout reports reason=removed", async () => {
+    const app = new App();
+    const s = await app.signIn();
+    await app.call("/auth/logout", { method: "POST", token: s.access });
+    expect(await reasonOf(await app.call("/auth/refresh", { body: { refresh_token: s.refresh } }))).toEqual([401, "revoked", "removed"]);
+    expect(await reasonOf(await app.call("/v1/me", { token: s.access }))).toEqual([401, "revoked", "removed"]);
+  });
+
+  it("removal from another computer reports reason=removed", async () => {
+    const app = new App();
+    const pc1 = await app.signIn({ sub: "u", email: "u@example.com" }, "PC 1");
+    const pc2 = await app.signIn({ sub: "u", email: "u@example.com" }, "PC 2");
+    await app.call(`/v1/devices/${pc2.deviceId}`, { method: "DELETE", token: pc1.access });
+    expect(await reasonOf(await app.call("/v1/keys", { token: pc2.access }))).toEqual([401, "revoked", "removed"]);
+    expect(await reasonOf(await app.call("/auth/refresh", { body: { refresh_token: pc2.refresh } }))).toEqual([401, "revoked", "removed"]);
+  });
+
+  it("the device cap reports reason=removed", async () => {
+    const app = new App();
+    const first = await app.signIn({ sub: "u", email: "u@example.com" }, "PC 0");
+    for (let i = 1; i < 21; i++) await app.signIn({ sub: "u", email: "u@example.com" }, `PC ${i}`);
+    expect(await reasonOf(await app.call("/v1/me", { token: first.access }))).toEqual([401, "revoked", "removed"]);
+  });
+
+  it("a logged-out device that later replays an old token keeps reason=removed", async () => {
+    const app = new App();
+    const s = await app.signIn();
+    const next = await jsonOf(await app.call("/auth/refresh", { body: { refresh_token: s.refresh } }));
+    await app.call("/auth/logout", { method: "POST", token: next.access_token });
+    expect(await reasonOf(await app.call("/auth/refresh", { body: { refresh_token: s.refresh } }))).toEqual([401, "revoked", "removed"]);
+  });
+
+  it("a deleted account reports removed for its old tokens", async () => {
+    const app = new App();
+    const s = await app.signIn();
+    await app.call("/v1/account", { method: "DELETE", token: s.access });
+    expect(await reasonOf(await app.call("/v1/me", { token: s.access }))).toEqual([401, "revoked", "removed"]);
   });
 });

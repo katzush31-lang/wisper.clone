@@ -1,4 +1,4 @@
-import { HttpError } from "./http";
+import { HttpError, revokedError } from "./http";
 import { one } from "./db";
 import { verifyAccessToken } from "./tokens";
 import type { AuthedUser, Env } from "./types";
@@ -20,13 +20,15 @@ export async function requireUser(req: Request, env: Env): Promise<AuthedUser> {
   const claims = await verifyAccessToken(env.TOKEN_SECRET, match[1]!);
   if (!claims) throw unauthorized();
 
-  const device = await one<{ id: string }>(
+  const device = await one<{ revoked: number; revoked_reason: string | null }>(
     env.DB,
-    "SELECT id FROM devices WHERE id = ? AND user_id = ? AND revoked = 0",
+    "SELECT revoked, revoked_reason FROM devices WHERE id = ? AND user_id = ?",
     claims.did,
     claims.sub,
   );
-  if (!device) throw new HttpError(401, "revoked", "This computer was signed out. Please sign in again.");
+  // A device that no longer exists (account deleted elsewhere) counts as removed.
+  if (!device) throw revokedError("removed");
+  if (device.revoked) throw revokedError(device.revoked_reason);
 
   return { userId: claims.sub, deviceId: claims.did };
 }

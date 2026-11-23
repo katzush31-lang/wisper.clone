@@ -55,7 +55,7 @@ export async function removeDevice(req: Request, env: Env, id: string): Promise<
   // Someone else's device id (or a made-up one) matches no row here: same answer as "not found".
   const changed = await exec(
     env.DB,
-    "UPDATE devices SET revoked = 1 WHERE id = ? AND user_id = ? AND revoked = 0",
+    "UPDATE devices SET revoked = 1, revoked_reason = 'removed' WHERE id = ? AND user_id = ? AND revoked = 0",
     id, userId,
   );
   if (changed !== 1) throw notFound();

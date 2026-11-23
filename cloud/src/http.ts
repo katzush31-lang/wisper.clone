@@ -6,6 +6,7 @@ export class HttpError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    readonly extra: Record<string, unknown> = {},
   ) {
     super(message);
   }
@@ -38,7 +39,7 @@ export function htmlPage(message: string, status = 200): Response {
 }
 
 export function errorResponse(e: HttpError): Response {
-  return json({ error: e.code, message: e.message }, e.status);
+  return json({ error: e.code, message: e.message, ...e.extra }, e.status);
 }
 
 /** Reads a JSON object body, refusing anything over 1 MB (even with no Content-Length). */
@@ -104,4 +105,15 @@ export function requireString(v: unknown, what: string, maxLen: number, minLen =
     throw badRequest(`${what} must be text of ${minLen} to ${maxLen} characters.`);
   }
   return v;
+}
+
+export type RevokedReason = "reuse" | "removed";
+
+export function revokedError(reason: string | null | undefined): HttpError {
+  return new HttpError(
+    401,
+    "revoked",
+    "This computer was signed out. Please sign in again.",
+    { reason: reason === "reuse" ? "reuse" : "removed" },
+  );
 }
