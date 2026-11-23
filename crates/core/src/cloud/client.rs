@@ -109,7 +109,15 @@ async fn error_from(resp: reqwest::Response) -> CloudError {
     let code = body.get("error").and_then(|c| c.as_str()).unwrap_or("");
     let message = body.get("message").and_then(|m| m.as_str()).unwrap_or("");
     if status.as_u16() == 401 {
-        return if code == "revoked" { CloudError::Revoked } else { CloudError::Unauthorized };
+        if code != "revoked" {
+            return CloudError::Unauthorized;
+        }
+        // "reuse" (a replayed refresh token) and "account_deleted" keep local keys; "removed",
+        // or no reason from an older server, means this computer was signed out of the account.
+        return match body.get("reason").and_then(|r| r.as_str()) {
+            Some("reuse") | Some("account_deleted") => CloudError::RevokedKeepKeys,
+            _ => CloudError::Revoked,
+        };
     }
     if !message.is_empty() {
         return CloudError::Server(message.to_string());

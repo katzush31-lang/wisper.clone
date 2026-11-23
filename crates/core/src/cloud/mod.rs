@@ -32,6 +32,10 @@ pub enum CloudError {
     /// This computer was removed from the account.
     #[error("This computer was signed out of your account. Please sign in again.")]
     Revoked,
+    /// Signed out because the sign-in was replayed (maybe a dropped reply) or the account was
+    /// deleted elsewhere. Local API keys must be kept: the cloud copy may be gone.
+    #[error("Please sign in again.")]
+    RevokedKeepKeys,
     #[error("{0}")]
     Server(String),
 }
@@ -43,7 +47,7 @@ impl CloudError {
 
     /// True when the user has to sign in again (and the app should show itself as signed out).
     pub fn needs_sign_in(&self) -> bool {
-        matches!(self, CloudError::Unauthorized | CloudError::Revoked)
+        matches!(self, CloudError::Unauthorized | CloudError::Revoked | CloudError::RevokedKeepKeys)
     }
 }
 
@@ -156,20 +160,20 @@ pub fn parse_callback(request_line: &str) -> Callback {
     }
 }
 
+fn hex_val(b: u8) -> Option<u8> {
+    (b as char).to_digit(16).map(|d| d as u8)
+}
+
+/// Works on bytes only, so odd input (multi-byte characters right after a `%`) can't panic.
 fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
         match b[i] {
-            b'%' if i + 2 < b.len() => {
-                if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                    out.push(v);
-                    i += 3;
-                    continue;
-                }
-                out.push(b'%');
-                i += 1;
+            b'%' if i + 2 < b.len() && hex_val(b[i + 1]).is_some() && hex_val(b[i + 2]).is_some() => {
+                out.push(hex_val(b[i + 1]).unwrap() * 16 + hex_val(b[i + 2]).unwrap());
+                i += 3;
             }
             b'+' => {
                 out.push(b' ');
@@ -182,6 +186,15 @@ fn percent_decode(s: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Plain-English text for an `error=` value the browser brings back to the loopback.
+pub fn callback_error_message(code: &str) -> String {
+    match code {
+        "access_denied" => "Sign-in was cancelled.".to_string(),
+        "google_failed" => "Google sign-in didn't work. Please try again.".to_string(),
+        other => format!("Google sign-in didn't complete ({other}). Please try again."),
+    }
 }
 
 pub(crate) fn now_ms() -> i64 {
@@ -211,6 +224,13 @@ mod helper_tests {
     }
 
     #[test]
+    fn callback_errors_have_plain_english_messages() {
+        assert_eq!(callback_error_message("access_denied"), "Sign-in was cancelled.");
+        assert_eq!(callback_error_message("google_failed"), "Google sign-in didn't work. Please try again.");
+        assert_eq!(parse_callback("GET /callback?error=google_failed HTTP/1.1"), Callback::Error("google_failed".into()));
+    }
+
+    #[test]
     fn callback_parsing_accepts_only_get_callback() {
         assert_eq!(parse_callback("GET /callback?code=abc123 HTTP/1.1"), Callback::Code("abc123".into()));
         assert_eq!(parse_callback("GET /callback?x=1&code=a%2Db HTTP/1.1"), Callback::Code("a-b".into()));
@@ -225,6 +245,10 @@ mod helper_tests {
     #[test]
     fn percent_decoding_handles_edges() {
         assert_eq!(percent_decode("a%2"), "a%2");
+        // Multi-byte characters right after a % must not panic (they used to slice mid-character).
+        assert_eq!(percent_decode("%a\u{e9}"), "%a\u{e9}");
+        assert_eq!(percent_decode("%\u{e9}9"), "%\u{e9}9");
+        assert_eq!(percent_decode("%c3%a9"), "\u{e9}");
         assert_eq!(percent_decode("%41%"), "A%");
         assert_eq!(percent_decode("a+b"), "a b");
     }
