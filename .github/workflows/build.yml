@@ -45,6 +45,16 @@ jobs:
           else
             echo "No ANTHROPIC_API_KEY secret yet; skipping real-API quality tests."
           fi
+      - name: Quick path (skip the AI for tiny dictations) matches the real AI cleanup (only when API keys are set)
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            cargo test -p wisper-core --locked --test quick_eval -- --ignored --nocapture
+          else
+            echo "No ANTHROPIC_API_KEY secret yet; skipping the quick-path comparison."
+          fi
 
       - name: Cleanup speed and quality by model
         continue-on-error: true

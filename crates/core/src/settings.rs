@@ -93,6 +93,10 @@ pub struct ProviderSettings {
     pub openai_cleanup_model: String,
     /// Quicker model for short dictations.
     pub fast_cleanup: FastCleanup,
+    /// Transcribe while the user talks (OpenAI Realtime), so text is ready as soon as they stop.
+    /// The recording is still saved; anything the live connection misses is transcribed the
+    /// normal way.
+    pub live_transcription: bool,
 }
 
 /// Short dictations are cleaned up by a quicker model so text appears sooner.
@@ -104,6 +108,9 @@ pub struct FastCleanup {
     pub max_seconds: u32,
     pub anthropic_model: String,
     pub openai_model: String,
+    /// Tidy tiny dictations on this computer without the AI, only when there's nothing for
+    /// the AI to fix (see `quick.rs`). Off until the real-AI comparison proves it safe.
+    pub skip_ai_for_tiny: bool,
 }
 
 impl Default for FastCleanup {
@@ -111,6 +118,7 @@ impl Default for FastCleanup {
         Self {
             enabled: true,
             max_seconds: 30,
+            skip_ai_for_tiny: false,
             anthropic_model: crate::providers::models::DEFAULT_FAST_ANTHROPIC.into(),
             openai_model: crate::providers::models::DEFAULT_FAST_OPENAI.into(),
         }
@@ -125,6 +133,7 @@ impl Default for ProviderSettings {
             anthropic_model: crate::providers::models::DEFAULT_ANTHROPIC.into(),
             openai_cleanup_model: crate::providers::models::DEFAULT_OPENAI_CLEANUP.into(),
             fast_cleanup: FastCleanup::default(),
+            live_transcription: true,
         }
     }
 }
@@ -463,6 +472,17 @@ mod tests {
         assert!(s.sounds.enabled);
         assert_eq!(s.default_mode, "auto");
         assert!(!s.hotkeys.dictate.is_empty());
+    }
+
+    #[test]
+    fn live_transcription_is_on_by_default_and_for_older_files() {
+        assert!(Settings::default().providers.live_transcription);
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        std::fs::write(&p, r#"{"providers":{"transcriptionModel":"gpt-transcribe"}}"#).unwrap();
+        assert!(Settings::load(&p).providers.live_transcription);
+        std::fs::write(&p, r#"{"providers":{"liveTranscription":false}}"#).unwrap();
+        assert!(!Settings::load(&p).providers.live_transcription);
     }
 
     #[test]

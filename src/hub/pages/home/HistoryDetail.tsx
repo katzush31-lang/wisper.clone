@@ -77,7 +77,7 @@ export default function HistoryDetail({
   const t = item.timings;
   const timing = [
     ms(t?.recordingMs) && `Recording ${ms(t?.recordingMs)}`,
-    ms(t?.transcribeWaitMs) && `Waiting after you stopped ${ms(t?.transcribeWaitMs)}`,
+    ms(t?.transcribeWaitMs) && `Waiting after you stopped ${ms(t?.transcribeWaitMs)}${t?.live ? " · live" : ""}`,
     ms(t?.cleanupMs) && `Cleanup ${ms(t?.cleanupMs)}${t?.cleanupModel ? ` · ${modelName(t.cleanupModel)}` : ""}`,
   ].filter(Boolean);
   const facts = [

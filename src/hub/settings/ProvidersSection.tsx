@@ -177,6 +177,12 @@ export default function ProvidersSection({ settings, update }: SectionProps) {
         <SettingRow title="Speech-to-text model" description="The model that listens to you. The recommended one is the best balance of accuracy and price." stacked>
           <ModelSelect label="Speech-to-text model" models={speech} value={settings.providers.transcriptionModel} onChange={(id) => setProviders({ transcriptionModel: id })} />
         </SettingRow>
+        <SettingRow
+          title="Live transcription"
+          description="Wisper transcribes while you talk, so text is ready as soon as you stop. Your recording is still saved, so nothing is lost if the connection drops."
+        >
+          <Switch label="Live transcription" checked={settings.providers.liveTranscription} onChange={(liveTranscription) => setProviders({ liveTranscription })} />
+        </SettingRow>
       </SettingGroup>
 
       <SettingGroup title="Claude API key (used for cleanup)">
@@ -254,6 +260,16 @@ export default function ProvidersSection({ settings, update }: SectionProps) {
             </SettingRow>
           </>
         )}
+        <SettingRow
+          title="Skip the AI for tiny dictations"
+          description="Very short dictations with nothing to fix (no ums, corrections, numbers or Hebrew words) are tidied instantly on this computer. Anything else still goes to the AI."
+        >
+          <Switch
+            label="Skip the AI for tiny dictations"
+            checked={!!fast.skipAiForTiny}
+            onChange={(skipAiForTiny) => setFast({ skipAiForTiny })}
+          />
+        </SettingRow>
       </SettingGroup>
 
       <p className="muted section-note">

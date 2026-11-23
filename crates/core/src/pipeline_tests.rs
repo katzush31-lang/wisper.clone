@@ -553,3 +553,32 @@ async fn redo_as_and_commands_use_the_normal_model() {
     h.engine.run_instruction("make it shorter", Some("some selected text"), &c).await.unwrap();
     assert_eq!(h.llm.requests.lock().unwrap().last().unwrap().model, "claude-sonnet-5-5");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tiny_dictation_skips_the_ai_only_when_switched_on() {
+    // Off (the default): the AI is asked even for a tiny, clean sentence.
+    let h = harness();
+    h.stt.script.lock().unwrap().push_back(Ok("Sounds good to me.".into()));
+    let rec = record(&h, ctx("notepad.exe", ""), &[(false, 300), (true, 1500), (false, 400)]);
+    h.engine.process(rec, &no_progress()).await.unwrap();
+    assert_eq!(h.llm.requests.lock().unwrap().len(), 1);
+
+    // On: a tiny clean sentence is tidied locally; one with a filler still goes to the AI.
+    let h = harness();
+    let mut s = h.engine.settings();
+    s.providers.fast_cleanup.skip_ai_for_tiny = true;
+    h.engine.set_settings(s);
+    h.stt.script.lock().unwrap().push_back(Ok("Sounds good to me.".into()));
+    let rec = record(&h, ctx("notepad.exe", ""), &[(false, 300), (true, 1500), (false, 400)]);
+    let id = rec.id.clone();
+    h.engine.process(rec, &no_progress()).await.unwrap();
+    assert_eq!(h.llm.requests.lock().unwrap().len(), 0, "no AI call for a tiny clean sentence");
+    let item = h.engine.db.get(&id).unwrap().unwrap();
+    assert_eq!(item.final_text.as_deref(), Some("Sounds good to me."));
+    assert_eq!(item.timings.as_ref().unwrap()["cleanupModel"], "local");
+
+    h.stt.script.lock().unwrap().push_back(Ok("Um, sounds good to me.".into()));
+    let rec = record(&h, ctx("notepad.exe", ""), &[(false, 300), (true, 1500), (false, 400)]);
+    h.engine.process(rec, &no_progress()).await.unwrap();
+    assert_eq!(h.llm.requests.lock().unwrap().len(), 1, "a filler word still goes to the AI");
+}

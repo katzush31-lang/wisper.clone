@@ -4,6 +4,7 @@
 pub mod anthropic;
 pub mod models;
 pub mod openai;
+pub mod realtime;
 
 use std::time::Duration;
 

@@ -708,6 +708,15 @@ impl Db {
         Ok(())
     }
 
+    /// Adds fields to a dictation's `timings` JSON (keeping what is there).
+    pub fn merge_timings(&self, id: &str, extra: &serde_json::Value) -> DbResult<()> {
+        self.c().execute(
+            "UPDATE dictations SET timings=json_patch(COALESCE(timings, '{}'), ?2) WHERE id=?1",
+            params![id, extra.to_string()],
+        )?;
+        Ok(())
+    }
+
     pub fn set_final_text(&self, id: &str, final_text: &str) -> DbResult<()> {
         let words = crate::text::word_count(final_text) as i64;
         self.c().execute(

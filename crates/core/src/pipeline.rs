@@ -20,6 +20,7 @@ use crate::audio::{self, encode, level::LevelMeter, pcm_file::PcmWriter, resampl
 use crate::db::{Db, HistoryItem, SegmentRow, Status};
 use crate::dictionary;
 use crate::hotkey::RecordingKind;
+use crate::live::{LiveEndpoint, LiveFeed, LiveSetup, LiveShared};
 use crate::modes::{self, Mode};
 use crate::prompts::{self, CleanupContext, CleanupLevel};
 use crate::providers::{
@@ -40,6 +41,10 @@ pub struct ApiKeys {
 pub trait ProviderFactory: Send + Sync {
     fn transcriber(&self, keys: &ApiKeys) -> Arc<dyn Transcriber>;
     fn text_model(&self, keys: &ApiKeys, provider: CleanupProvider) -> Arc<dyn TextModel>;
+    /// Where live transcription connects (None = not available).
+    fn live_endpoint(&self) -> Option<LiveEndpoint> {
+        None
+    }
 }
 
 pub struct RealProviders;
@@ -53,6 +58,9 @@ impl ProviderFactory for RealProviders {
             CleanupProvider::Anthropic => Arc::new(Anthropic::new(keys.anthropic.as_deref().unwrap_or(""))),
             CleanupProvider::OpenAi => Arc::new(OpenAi::new(keys.openai.as_deref().unwrap_or(""))),
         }
+    }
+    fn live_endpoint(&self) -> Option<LiveEndpoint> {
+        Some(LiveEndpoint::openai())
     }
 }
 
@@ -128,7 +136,7 @@ pub struct Engine {
     active: Mutex<HashSet<String>>,
 }
 
-const KEYWORD_LIMIT: usize = 60;
+pub(crate) const KEYWORD_LIMIT: usize = 60;
 const CLEANUP_CHUNK_WORDS: usize = 900;
 const CLEANUP_SPLIT_THRESHOLD: usize = 1400;
 
@@ -238,6 +246,9 @@ impl Engine {
             self.release(&id);
             return Err(std::io::Error::other(e));
         }
+        // Live transcription connects in the background while the start sound plays; the
+        // recording itself never waits for it.
+        let live = self.live_setup(&ctx.app.name).map(|setup| LiveFeed::start(setup, device_rate, &rt));
         Ok(Session {
             id,
             kind,
@@ -258,9 +269,35 @@ impl Engine {
             jobs: Vec::new(),
             prev_text: Arc::new(Mutex::new(String::new())),
             write_error: None,
+            live,
         })
     }
 
+    /// Settings for live transcription of a new recording, if it is on and can be used.
+    fn live_setup(&self, app_name: &str) -> Option<LiveSetup> {
+        let settings = self.settings();
+        let model = settings.providers.transcription_model.clone();
+        if !settings.providers.live_transcription || !crate::providers::realtime::supports_live(&model) {
+            return None;
+        }
+        let key = self.keys().openai.map(|k| k.trim().to_string()).filter(|k| !k.is_empty())?;
+        let endpoint = self.factory.live_endpoint()?;
+        let entries = self.db.dict_all().unwrap_or_default();
+        // The context of earlier pieces is carried by the live session itself.
+        let app_name = Some(app_name).filter(|n| !n.is_empty());
+        Some(LiveSetup {
+            endpoint,
+            key,
+            session: crate::providers::realtime::SessionConfig {
+                model,
+                prompt: Some(prompts::transcription_prompt(None, app_name)),
+                keywords: dictionary::keywords(&entries, KEYWORD_LIMIT),
+                languages: settings.languages.clone(),
+            },
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn spawn_segment_job(
         self: &Arc<Self>,
         rt: &tokio::runtime::Handle,
@@ -269,6 +306,7 @@ impl Engine {
         samples: Vec<i16>,
         prev_text: Arc<Mutex<String>>,
         app_name: Option<String>,
+        live: Option<Arc<LiveShared>>,
     ) -> JoinHandle<Result<String, ProviderError>> {
         let row = SegmentRow {
             dictation_id: id.to_string(),
@@ -286,8 +324,19 @@ impl Engine {
             if !plan.has_speech {
                 return Ok(String::new());
             }
-            let prev = prev_text.lock().unwrap_or_else(|p| p.into_inner()).clone();
-            let result = engine.transcribe_samples(samples, Some(prev.as_str()), app_name.as_deref()).await;
+            // Live transcription first, when it's running; otherwise (or if it fails or is
+            // late) the normal way, from this piece's saved audio.
+            let live_text = match &live {
+                Some(l) => l.wait(plan.index).await,
+                None => None,
+            };
+            let result = match live_text {
+                Some(t) => Ok(t),
+                None => {
+                    let prev = prev_text.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                    engine.transcribe_samples(samples, Some(prev.as_str()), app_name.as_deref()).await
+                }
+            };
             let mut row = row;
             match &result {
                 Ok(t) => {
@@ -381,6 +430,9 @@ impl Engine {
         progress(Stage::Cleaning);
         let _ = self.db.set_status(&id, Status::Cleaning);
         let out = self.finish_text(&id, rec.kind, &raw, &rec.ctx, None, rec.duration_ms, transcribe_wait, stop_at).await;
+        if out.is_ok() {
+            let _ = self.db.merge_timings(&id, &crate::live::timings_json(rec.live.as_deref()));
+        }
         // Compress the recording after the text is ready, so pasting never waits for it.
         if out.is_ok() {
             self.archive_audio_later(&id, &rec.pcm);
@@ -520,6 +572,17 @@ impl Engine {
         let use_ctx = settings.context_awareness && !excluded;
         let before = if use_ctx { ctx.text_before.clone() } else { None };
         let after = if use_ctx { ctx.text_after.clone() } else { None };
+
+        // Tiny dictations with nothing for the AI to fix are tidied right here (instant).
+        // Uses the raw text so a spoken mode switch is still noticed and declined.
+        if settings.providers.fast_cleanup.skip_ai_for_tiny && forced_mode.is_none() && settings.cleanup_level != CleanupLevel::None {
+            let qc = crate::quick::QuickContext::new(&entries, &snips, &self.modes(), &mode, ctx.app.category, settings.cleanup_level)
+                .with_text_before(before.as_deref());
+            if let Some(t) = crate::quick::quick_clean(raw, &qc) {
+                let final_text = text::fit_to_context(&t, before.as_deref(), after.as_deref());
+                return CleanResult { text: final_text, clean: Some(t), mode_id: mode.id.clone(), mode_name: mode.name.clone(), fixes: 0, error: None, model: Some("local".into()), fast: true };
+            }
+        }
 
         let deterministic = |s: &str| -> String {
             let s = if settings.smart_formatting { text::apply_spoken_line_breaks(s) } else { s.to_string() };
@@ -1087,6 +1150,8 @@ pub struct Session {
     jobs: Vec<JoinHandle<Result<String, ProviderError>>>,
     prev_text: Arc<Mutex<String>>,
     write_error: Option<String>,
+    /// Live transcription of this recording, when on.
+    live: Option<LiveFeed>,
 }
 
 pub struct FinishedRecording {
@@ -1097,6 +1162,7 @@ pub struct FinishedRecording {
     pub heard_speech: bool,
     pub pcm: PathBuf,
     jobs: Vec<JoinHandle<Result<String, ProviderError>>>,
+    live: Option<Arc<LiveShared>>,
 }
 
 impl Session {
@@ -1104,6 +1170,9 @@ impl Session {
     pub fn push(&mut self, interleaved: &[f32]) -> f32 {
         let mono = audio::downmix(interleaved, self.channels);
         let level = self.level.update(&mono);
+        if let Some(l) = self.live.as_mut() {
+            l.audio(&mono);
+        }
         let resampled = self.resampler.process(&mono);
         if resampled.is_empty() {
             return level;
@@ -1124,6 +1193,10 @@ impl Session {
                 self.dispatch(plan);
             }
         }
+        if let Some(l) = self.live.as_mut() {
+            // Stream everything that can no longer move to another piece.
+            l.release_upto(self.segmenter.safe_point());
+        }
         level
     }
 
@@ -1131,6 +1204,9 @@ impl Session {
         let take = plan.end.saturating_sub(self.seg_start).min(self.seg_samples.len());
         let samples: Vec<i16> = self.seg_samples.drain(..take).collect();
         self.seg_start = plan.end;
+        if let Some(l) = self.live.as_mut() {
+            l.segment(&plan);
+        }
         let job = self.engine.spawn_segment_job(
             &self.rt,
             &self.id,
@@ -1138,6 +1214,7 @@ impl Session {
             samples,
             self.prev_text.clone(),
             Some(self.ctx.app.name.clone()).filter(|n| !n.is_empty()),
+            self.live.as_ref().map(|l| l.shared()),
         );
         self.jobs.push(job);
     }
@@ -1185,6 +1262,7 @@ impl Session {
                 self.dispatch(plan);
             }
         }
+        let live = self.live.take().map(|l| l.finish());
         let duration_ms = self.recorded_ms();
         if let Some(w) = self.writer.take() {
             if let Err(e) = w.finish() {
@@ -1203,11 +1281,15 @@ impl Session {
             heard_speech: self.segmenter.heard_speech(),
             pcm: self.pcm.clone(),
             jobs: std::mem::take(&mut self.jobs),
+            live,
         }
     }
 
     /// Cancels: transcription jobs are stopped, the audio is kept in history as "cancelled".
     pub fn cancel(mut self) {
+        if let Some(l) = self.live.take() {
+            l.cancel();
+        }
         for j in &self.jobs {
             j.abort();
         }

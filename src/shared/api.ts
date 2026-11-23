@@ -56,6 +56,8 @@ export interface FastCleanup {
   maxSeconds: number;
   anthropicModel: string;
   openaiModel: string;
+  /** tidy tiny dictations on this computer when there's nothing for the AI to fix */
+  skipAiForTiny?: boolean;
 }
 
 export interface Settings {
@@ -101,6 +103,8 @@ export interface Settings {
     openaiCleanupModel: string;
     /** a quicker model for short dictations */
     fastCleanup: FastCleanup;
+    /** transcribe while the user talks (OpenAI Realtime); the recording is still saved */
+    liveTranscription: boolean;
   };
   typingWpm: number;
   smartFormatting: boolean;
@@ -175,6 +179,12 @@ export interface HistoryItem {
     /** the AI model that cleaned the text up, and whether it was the fast one */
     cleanupModel?: string | null;
     cleanupFast?: boolean;
+    /** live transcription: used (some text came from it), tried, and how many pieces came from it vs. the normal way */
+    live?: boolean;
+    liveTried?: boolean;
+    liveConnected?: boolean;
+    livePieces?: number;
+    fallbackPieces?: number;
   } | null;
   meta: Record<string, unknown> | null;
 }
