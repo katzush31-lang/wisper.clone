@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use super::*;
 
 pub const NAME: &str = "Claude";
-const BASE: &str = "https://api.anthropic.com/v1";
+pub(crate) const BASE: &str = "https://api.anthropic.com/v1";
 const VERSION: &str = "2023-06-01";
 
 #[derive(Clone)]
@@ -21,7 +21,7 @@ pub struct Anthropic {
 
 impl Anthropic {
     pub fn new(key: &str) -> Self {
-        Self { key: key.trim().to_string(), base: BASE.into(), client: http_client(Duration::from_secs(120)) }
+        Self { key: key.trim().to_string(), base: BASE.into(), client: shared_client() }
     }
 
     pub fn with_base(mut self, base: &str) -> Self {
@@ -163,6 +163,7 @@ impl Anthropic {
         let resp = self
             .client
             .post(format!("{}/messages", self.base))
+            .timeout(Duration::from_secs(120))
             .header("x-api-key", &self.key)
             .header("anthropic-version", VERSION)
             .json(body)

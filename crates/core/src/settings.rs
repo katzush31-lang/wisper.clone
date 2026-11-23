@@ -91,6 +91,30 @@ pub struct ProviderSettings {
     pub cleanup_provider: CleanupProvider,
     pub anthropic_model: String,
     pub openai_cleanup_model: String,
+    /// Quicker model for short dictations.
+    pub fast_cleanup: FastCleanup,
+}
+
+/// Short dictations are cleaned up by a quicker model so text appears sooner.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FastCleanup {
+    pub enabled: bool,
+    /// "Short" means a recording shorter than this many seconds.
+    pub max_seconds: u32,
+    pub anthropic_model: String,
+    pub openai_model: String,
+}
+
+impl Default for FastCleanup {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_seconds: 30,
+            anthropic_model: crate::providers::models::DEFAULT_FAST_ANTHROPIC.into(),
+            openai_model: crate::providers::models::DEFAULT_FAST_OPENAI.into(),
+        }
+    }
 }
 
 impl Default for ProviderSettings {
@@ -100,6 +124,7 @@ impl Default for ProviderSettings {
             cleanup_provider: CleanupProvider::Anthropic,
             anthropic_model: crate::providers::models::DEFAULT_ANTHROPIC.into(),
             openai_cleanup_model: crate::providers::models::DEFAULT_OPENAI_CLEANUP.into(),
+            fast_cleanup: FastCleanup::default(),
         }
     }
 }

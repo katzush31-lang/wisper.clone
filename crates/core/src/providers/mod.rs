@@ -158,15 +158,78 @@ pub struct ModelInfo {
     pub recommended: bool,
 }
 
-pub(crate) fn http_client(timeout: Duration) -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(timeout)
-        .connect_timeout(Duration::from_secs(10))
-        .pool_idle_timeout(Duration::from_secs(90))
-        .tcp_keepalive(Duration::from_secs(30))
-        .user_agent(concat!("Wisper/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .expect("http client")
+/// One HTTP client for the whole app, so every request (and the pre-warm) shares the same
+/// connection pool and an already-open TLS connection is reused. Per-request timeouts are set
+/// where the request is built.
+pub(crate) fn shared_client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .pool_idle_timeout(Duration::from_secs(90))
+                .tcp_keepalive(Duration::from_secs(30))
+                .user_agent(concat!("Wisper/", env!("CARGO_PKG_VERSION")))
+                .build()
+                .expect("http client")
+        })
+        .clone()
+}
+
+/// How often the same host is pre-warmed at most.
+const PREWARM_EVERY: Duration = Duration::from_secs(60);
+
+/// Whether `host` is due for a pre-warm now (and marks it done). Pure bookkeeping, tested below.
+fn prewarm_due(done: &mut std::collections::HashMap<String, std::time::Instant>, host: &str, now: std::time::Instant) -> bool {
+    match done.get(host) {
+        Some(t) if now.duration_since(*t) < PREWARM_EVERY => false,
+        _ => {
+            done.insert(host.to_string(), now);
+            true
+        }
+    }
+}
+
+/// Opens (or keeps alive) the connection to an API host before it is needed, so the real call
+/// after recording skips the TCP + TLS handshake. Sends a bodyless HEAD to the site root with
+/// no API key: it costs nothing, uses no quota and the answer (usually 404/401) is ignored.
+/// Never fails and never takes longer than a few seconds; skipped if done in the last minute.
+pub async fn prewarm(base_url: &str) {
+    static DONE: std::sync::Mutex<Option<std::collections::HashMap<String, std::time::Instant>>> = std::sync::Mutex::new(None);
+    let Ok(url) = reqwest::Url::parse(base_url) else { return };
+    let Some(host) = url.host_str().map(str::to_string) else { return };
+    let due = {
+        let Ok(mut g) = DONE.lock() else { return };
+        prewarm_due(g.get_or_insert_with(Default::default), &host, std::time::Instant::now())
+    };
+    if !due {
+        return;
+    }
+    let root = format!("{}://{}/", url.scheme(), url.authority());
+    let started = std::time::Instant::now();
+    let r = shared_client().head(root).timeout(Duration::from_secs(5)).send().await;
+    tracing::debug!("pre-warm {host}: {:?} in {} ms", r.map(|r| r.status()).map_err(|e| e.to_string()), started.elapsed().as_millis());
+}
+
+/// Pre-warms every host a dictation will talk to: transcription (OpenAI) and the chosen
+/// cleanup provider. Only hosts whose key is set are touched.
+pub async fn prewarm_for(openai_key: bool, anthropic_key: bool, cleanup: crate::settings::CleanupProvider) {
+    let cleanup_url = match cleanup {
+        crate::settings::CleanupProvider::Anthropic if anthropic_key => Some(anthropic::BASE),
+        crate::settings::CleanupProvider::OpenAi if openai_key => Some(openai::BASE),
+        _ => None,
+    };
+    let a = async {
+        if openai_key {
+            prewarm(openai::BASE).await
+        }
+    };
+    let b = async {
+        if let Some(u) = cleanup_url {
+            prewarm(u).await
+        }
+    };
+    tokio::join!(a, b);
 }
 
 /// Retry policy for temporary errors: quick retries with backoff, honouring Retry-After.
@@ -257,6 +320,16 @@ mod tests {
             .await;
         assert_eq!(r.unwrap_err().kind, ErrorKind::Auth);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn prewarm_is_throttled_per_host() {
+        let mut done = std::collections::HashMap::new();
+        let t0 = std::time::Instant::now();
+        assert!(prewarm_due(&mut done, "api.openai.com", t0));
+        assert!(!prewarm_due(&mut done, "api.openai.com", t0 + Duration::from_secs(59)));
+        assert!(prewarm_due(&mut done, "api.anthropic.com", t0 + Duration::from_secs(1)));
+        assert!(prewarm_due(&mut done, "api.openai.com", t0 + Duration::from_secs(61)));
     }
 
     #[test]

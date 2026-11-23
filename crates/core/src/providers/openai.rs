@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use super::*;
 
 pub const NAME: &str = "OpenAI";
-const BASE: &str = "https://api.openai.com/v1";
+pub(crate) const BASE: &str = "https://api.openai.com/v1";
 
 #[derive(Clone)]
 pub struct OpenAi {
@@ -20,7 +20,7 @@ pub struct OpenAi {
 
 impl OpenAi {
     pub fn new(key: &str) -> Self {
-        Self { key: key.trim().to_string(), base: BASE.into(), client: http_client(Duration::from_secs(90)) }
+        Self { key: key.trim().to_string(), base: BASE.into(), client: shared_client() }
     }
 
     pub fn with_base(mut self, base: &str) -> Self {
@@ -149,6 +149,7 @@ impl OpenAi {
         let resp = self
             .client
             .post(format!("{}/responses", self.base))
+            .timeout(Duration::from_secs(90))
             .bearer_auth(&self.key)
             .json(body)
             .send()
@@ -168,6 +169,7 @@ impl OpenAi {
         let resp = self
             .client
             .post(format!("{}/audio/transcriptions", self.base))
+            .timeout(Duration::from_secs(90))
             .bearer_auth(&self.key)
             .multipart(form)
             .send()

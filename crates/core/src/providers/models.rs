@@ -6,6 +6,8 @@ use super::ModelInfo;
 pub const DEFAULT_TRANSCRIPTION: &str = "gpt-transcribe";
 pub const DEFAULT_ANTHROPIC: &str = "claude-sonnet-5-5";
 pub const DEFAULT_OPENAI_CLEANUP: &str = "gpt-6.2-sol";
+pub const DEFAULT_FAST_ANTHROPIC: &str = "claude-haiku-5-5";
+pub const DEFAULT_FAST_OPENAI: &str = "gpt-6-luna";
 
 fn m(id: &str, name: &str, note: &str, recommended: bool) -> ModelInfo {
     ModelInfo { id: id.into(), name: name.into(), note: note.into(), recommended }
@@ -61,6 +63,8 @@ mod tests {
         assert!(transcription_models().iter().any(|m| m.id == DEFAULT_TRANSCRIPTION && m.recommended));
         assert!(anthropic_models().iter().any(|m| m.id == DEFAULT_ANTHROPIC && m.recommended));
         assert!(openai_cleanup_models().iter().any(|m| m.id == DEFAULT_OPENAI_CLEANUP));
+        assert!(anthropic_models().iter().any(|m| m.id == DEFAULT_FAST_ANTHROPIC));
+        assert!(openai_cleanup_models().iter().any(|m| m.id == DEFAULT_FAST_OPENAI));
     }
 
     #[test]
