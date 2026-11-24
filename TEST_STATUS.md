@@ -2,7 +2,7 @@
 
 | Suite | Where | Status |
 |---|---|---|
-| Rust core unit + pipeline + sync tests (`cargo test -p wisper-core`): 295 tests incl. live transcription and 51 shortcut tests (UI: 55) | CI Linux + Windows | passing |
+| Rust core unit + pipeline + sync tests (`cargo test -p wisper-core`): 332 tests incl. live transcription, shortcuts and tidy-while-talking (UI: 57) | CI Linux + Windows | passing |
 | UI typecheck + Vitest (24 tests) | CI Linux | passing |
 | Windows compile of the app (`cargo xwin check`, and the real build on CI) | local + CI Windows | passing |
 | Windows installer build + release | CI Windows | passing (latest release published automatically; signed updates) |
@@ -18,3 +18,5 @@
 | Live transcription vs real OpenAI (`live_realtime`) | CI with OPENAI_API_KEY | not run yet: no OPENAI_API_KEY secret |
 | Speed features review | spec-reviewer (Opus) | signed off |
 | Owner batch (history, shortcuts, mouse, prompts page, key sync) review | spec-reviewer (Opus) | signed off (2 rounds) |
+| Tidy while talking vs whole text (`chunked_eval`, CI) | CI with ANTHROPIC_API_KEY | 15/15 pass; wait after stop 1.1 s vs 1.8 s |
+| Tidy while talking review | spec-reviewer (Opus) | signed off (3 rounds) |

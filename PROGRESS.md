@@ -8,10 +8,8 @@
 - In progress: see "Open items".
 
 ## Open items (owner requests, newest first)
-- "Clean up while you talk" (setting "Tidy up while you talk"): built — long dictations are
-  cleaned in parts while talking, only the tail at stop; whole-text fallback rules in
-  `docs/PLAN.md`. Needs: spec-reviewer pass, the CI real-API comparison (`--test chunked_eval`),
-  and the owner's checklist (section 10) before release.
+- Owner to check on Windows: "Tidy up while you talk" on a long dictation in Notepad (History shows
+  "N parts tidied while you talked"), checklist section 10.
 - Needs a real Windows check: shortcuts in Remote Desktop/Hyper-V full screen (hold 5 s+), mouse
   shortcuts, admin-window notice (checklist section 11).
 - Not run yet: real-API live transcription check (needs `OPENAI_API_KEY` GitHub secret).
@@ -25,6 +23,7 @@
 | 2026-11-22 | 1–5 | Core engine, Windows layer, all UI pages. Independent review: 3 rounds, signed off. |
 | 2026-11-22 | Fixes | Pages scroll, shortcut recorder fallback, floating bar click-through (window region). Real-API quality tests 12/12. |
 | 2026-11-23 | Accounts (optional) | Google Sign-In, encrypted cloud API keys (per-computer choice), sync of settings/dictionary/snippets/word counts via Cloudflare Worker + D1 (`cloud/`). Design: `docs/ACCOUNTS.md`. Security review: 4 rounds, signed off. |
+| 2026-11-24 | Tidy up while you talk | Long dictations cleaned in parts while talking; only the tail at stop. Real-API eval: 15/15 pass, 13/15 used parts, median wait after stop 1.1 s vs 1.8 s whole-text. Review: 3 rounds, signed off. |
 | 2026-11-24 | Owner batch | History hides no-speech recordings (kept hidden 24 h, retryable) and groups waiting ones; copy button per row; Settings → AI instructions (exact prompts); Home keys card fixed; second computer picks synced keys automatically; shortcuts always work (non-blocking hook, watchdog, stuck-key recovery, Remote-Desktop-safe holds, admin-window notice); mouse-button shortcuts (double-click the wheel). Review: 2 rounds, signed off. |
 | 2026-11-23 | Speed | Live transcription (OpenAI Realtime, per-piece fallback to the saved recording), fast model for short dictations (Haiku 12/12 golden, ~0.63 s vs Sonnet 1.31 s), shared HTTP client + prewarm, Speed panel, optional local "skip the AI" path (off; CI eval 70/73 identical). Review signed off. |
 
