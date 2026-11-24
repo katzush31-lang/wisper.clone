@@ -2,7 +2,7 @@
 
 | Suite | Where | Status |
 |---|---|---|
-| Rust core unit + pipeline + sync tests (`cargo test -p wisper-core`): 246 tests incl. 32 live-transcription tests (UI: 41) | CI Linux + Windows | passing |
+| Rust core unit + pipeline + sync tests (`cargo test -p wisper-core`): 295 tests incl. live transcription and 51 shortcut tests (UI: 55) | CI Linux + Windows | passing |
 | UI typecheck + Vitest (24 tests) | CI Linux | passing |
 | Windows compile of the app (`cargo xwin check`, and the real build on CI) | local + CI Windows | passing |
 | Windows installer build + release | CI Windows | passing (latest release published automatically; signed updates) |
@@ -17,3 +17,4 @@
 | Quick path vs real AI (`quick_eval`, CI) | CI with ANTHROPIC_API_KEY | 73/167 handled; 70 identical, 2 full-stop only, 1 AI rewording (feature off by default) |
 | Live transcription vs real OpenAI (`live_realtime`) | CI with OPENAI_API_KEY | not run yet: no OPENAI_API_KEY secret |
 | Speed features review | spec-reviewer (Opus) | signed off |
+| Owner batch (history, shortcuts, mouse, prompts page, key sync) review | spec-reviewer (Opus) | signed off (2 rounds) |

@@ -229,33 +229,13 @@ pub struct RetryWaitingResult {
     still_waiting: usize,
 }
 
-/// "Try all again" on the waiting-recordings row: every queued or failed recording, oldest
-/// first. Stops early when the internet is still down.
+/// "Try all again" on the waiting-recordings row (logic and ordering live in core).
 #[tauri::command]
 pub async fn retry_waiting(app: AppHandle) -> Res<RetryWaitingResult> {
-    use wisper_core::providers::ErrorKind;
-    use wisper_core::pipeline::PipelineError;
     let c = ctl(&app);
-    let mut ids = Vec::new();
-    for status in ["queued", "failed"] {
-        let q = HistoryQuery { status: Some(status.into()), limit: Some(500), ..Default::default() };
-        ids.extend(c.engine.db.list(&q).map_err(dberr)?);
-    }
-    ids.sort_by_key(|i| i.created_at);
-    let total = ids.len();
-    let mut done = 0;
-    for it in ids {
-        let r = c.engine.retry_dictation(&it.id, None).await;
-        let offline = matches!(&r, Err(PipelineError::Queued { kind, .. }) if matches!(kind, ErrorKind::Network | ErrorKind::Timeout));
-        if matches!(r, Ok(_)) {
-            done += 1;
-        }
-        if offline {
-            break;
-        }
-    }
+    let r = wisper_core::waiting::retry_waiting(&c.engine).await;
     let _ = app.emit("history-changed", "");
-    Ok(RetryWaitingResult { done, still_waiting: total - done })
+    Ok(RetryWaitingResult { done: r.done, still_waiting: r.still_waiting })
 }
 
 #[tauri::command]

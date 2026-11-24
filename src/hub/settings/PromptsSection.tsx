@@ -134,6 +134,13 @@ export default function PromptsSection({ settings, onNavigate }: SectionProps & 
             </p>
           )}
 
+          {preview.autoPicked && (
+            <p className="prompt-note" role="note">
+              You picked {preview.chosenModeName}, but in this kind of app Wisper switches to the {preview.modeName} style, so that
+              is what is shown and sent.
+            </p>
+          )}
+
           <SettingGroup title="What is sent for a dictation">
             <div className="prompt-stack">
               <PromptBlock

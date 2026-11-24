@@ -1204,14 +1204,17 @@ impl Controller {
                     }
                     // Missed key-ups (focus moved to an admin window, the lock screen, a gap
                     // in the hook) would otherwise leave a shortcut half-pressed, so its next
-                    // press is ignored. The OS knows which keys are really held.
+                    // press is ignored. The OS usually knows which keys are held, but the
+                    // shortcut in use is only released on its say-so after a detected gap
+                    // (remote-desktop windows hide held keys from the OS).
                     if last_sync.elapsed() >= Duration::from_millis(500) {
                         last_sync = Instant::now();
                         // Ask the OS without holding the engine's lock (the hook needs it).
                         let mut held: Vec<u32> = me.hook.engine.lock().pressed_keys();
                         held.extend(wisper_core::hotkey::vk::MODIFIERS);
                         held.retain(|&k| platform::os_key_down(k));
-                        let fixed = me.hook.engine.lock().sync_keys(&|k| held.contains(&k), now);
+                        let gap = me.hook.missed_keys_at.load(Ordering::Relaxed);
+                        let fixed = me.hook.engine.lock().sync_keys(&|k| held.contains(&k), now, gap);
                         if !fixed.is_empty() {
                             tracing::info!("shortcut keys were released without Wisper seeing it; recovered: {fixed:?}");
                         }

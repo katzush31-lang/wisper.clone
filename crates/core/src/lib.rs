@@ -19,6 +19,7 @@ pub mod settings;
 pub mod snippets;
 pub mod sounds;
 pub mod text;
+pub mod waiting;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

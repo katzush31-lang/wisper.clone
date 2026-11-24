@@ -71,9 +71,12 @@ export function tidyNote(t: HistoryItem["timings"]): string | null {
   return null;
 }
 
-/** Failed and queued recordings still hold speech; History shows them as one row. */
+/**
+ * Failed and queued recordings still hold speech; History shows them as one row. One whose
+ * audio is gone can never succeed, so it stays a normal row with its error.
+ */
 export function isWaiting(i: HistoryItem): boolean {
-  return i.status === "queued" || i.status === "failed";
+  return (i.status === "queued" || i.status === "failed") && i.audioPath != null;
 }
 
 export interface KeyState {

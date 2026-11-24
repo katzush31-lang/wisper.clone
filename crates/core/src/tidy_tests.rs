@@ -262,7 +262,7 @@ async fn a_part_still_being_tidied_at_stop_runs_alongside_the_tail() {
     let c = ctx("notepad.exe", "");
     let t = tidy_for(&h, &c);
     let p = pieces(8);
-    h.llm.delay_ms.store(600, Ordering::SeqCst);
+    h.llm.delay_ms.store(2_000, Ordering::SeqCst);
     // Talking fast: no waiting for background work between pieces.
     for (i, x) in p.iter().enumerate() {
         t.piece_done(i, (i + 1) * PIECE_SAMPLES, x);
@@ -270,8 +270,8 @@ async fn a_part_still_being_tidied_at_stop_runs_alongside_the_tail() {
     assert!(t.stats().in_flight);
     let started = std::time::Instant::now();
     let r = stop(&h, &t, &p, &c).await;
-    // The tail didn't wait for the part in flight (600 ms each, run side by side).
-    assert!(started.elapsed() < std::time::Duration::from_millis(1_100), "{:?}", started.elapsed());
+    // The tail didn't wait for the part in flight (2 s each, run side by side; one after the other would take 4 s).
+    assert!(started.elapsed() < std::time::Duration::from_millis(3_500), "{:?}", started.elapsed());
     assert_eq!(r.chunked, 1);
     assert_eq!(r.text, format!("{}\n\n{}", p[..3].join(" "), p[3..].join(" ")));
     let reqs = h.llm.requests.lock().unwrap().clone();

@@ -597,10 +597,8 @@ impl Engine {
             }
         }
         if settings.default_mode == modes::AUTO {
-            if let Some(cat) = app.category {
-                if let Some(m) = modes::find(&modes, cat.default_mode()) {
-                    return (m.clone(), text.to_string());
-                }
+            if let Some(m) = natural_mode(&modes, app.category) {
+                return (m.clone(), text.to_string());
             }
         }
         let m = modes::find(&modes, &settings.default_mode).cloned().unwrap_or_else(fallback);
@@ -1103,6 +1101,11 @@ pub fn looks_like_cleanup(input: &str, output: &str) -> bool {
     let too_long = o > (i as f64 * 1.6) as usize + 8;
     let too_short = i >= 12 && o * 3 < i;
     !(too_long || too_short)
+}
+
+/// The style Auto leans towards for this kind of app (shared with the AI instructions preview).
+pub(crate) fn natural_mode(modes: &[Mode], cat: Option<crate::apps::AppCategory>) -> Option<&Mode> {
+    cat.and_then(|c| modes::find(modes, c.default_mode()))
 }
 
 /// The system blocks sent for a dictation cleanup: rules + dictionary, then mode + level.

@@ -34,6 +34,8 @@ describe("waiting recordings", () => {
   it("only failed and queued count as waiting", () => {
     expect(isWaiting(item({ status: "failed" }))).toBe(true);
     expect(isWaiting(item({ status: "queued" }))).toBe(true);
+    // audio deleted: can never succeed, so it is an ordinary failed row
+    expect(isWaiting(item({ status: "failed", audioPath: null }))).toBe(false);
     for (const status of ["done", "cancelled", "empty", "transcribing"] as const) {
       expect(isWaiting(item({ status }))).toBe(false);
     }

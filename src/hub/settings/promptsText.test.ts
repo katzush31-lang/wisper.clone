@@ -5,6 +5,8 @@ import { commandPromptText, dictationPromptText } from "./promptsText";
 const p: PromptPreview = {
   modeId: "email",
   modeName: "Email",
+  autoPicked: false,
+  chosenModeName: "Email",
   aiUsed: true,
   level: "light",
   levelText: "Edit lightly",

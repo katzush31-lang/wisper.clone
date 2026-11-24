@@ -218,6 +218,10 @@ unsafe fn hook_thread() {
                 // then. If not, Windows took it away (or an admin window has the keys).
                 if LAST_KEYBOARD_CALL.load(Ordering::Relaxed) + HOOK_SILENT_MS < at {
                     let now = now_ms();
+                    // Measurable proof that key events (maybe key-ups) never reached the hook.
+                    if let Some(s) = SHARED.get() {
+                        s.missed_keys_at.store(at, Ordering::Relaxed);
+                    }
                     if super::app::admin_window_in_front() {
                         // Keys typed into an admin app are none of our business, unless they
                         // are our shortcut: then explain why it does nothing.
@@ -265,13 +269,14 @@ fn handle(s: &HookShared, code: u32, down: bool) -> bool {
         // Never expected (lock holders only do quick memory work); let the event through
         // rather than risk the hook. The app logs the count, and `sync_keys` repairs the state.
         s.lock_misses.fetch_add(1, Ordering::Relaxed);
+        s.missed_keys_at.store(now, Ordering::Relaxed);
         return false;
     };
     let mut actions = Vec::new();
     let outcome = if down {
         // Missed key-ups/downs (focus moved to an admin window, the lock screen, a hook gap)
         // are repaired from the OS's own key state before the press is matched.
-        actions = engine.sync_keys(&os_key_down, now);
+        actions = engine.sync_keys(&os_key_down, now, s.missed_keys_at.load(Ordering::Relaxed));
         engine.key_down(code, now)
     } else {
         engine.key_up(code, now)
