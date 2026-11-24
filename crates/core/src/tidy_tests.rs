@@ -552,6 +552,24 @@ async fn a_part_failing_with_a_bad_key_does_not_ask_the_ai_again_at_stop() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_network_blip_while_talking_still_cleans_the_whole_text_at_stop() {
+    // Part 2 fails with a network error mid-dictation; by stop the AI works again, so the
+    // whole text must be cleaned normally (no warning, not the raw transcript).
+    let h = harness();
+    let c = ctx("notepad.exe", "");
+    let t = tidy_for(&h, &c);
+    let p = pieces(8);
+    *h.llm.fail_if.lock().unwrap() = Some((sentence(6), sentence(0), ProviderError::new(ErrorKind::Network, "Fake", "blip")));
+    feed_all(&t, &p).await;
+    let before = calls(&h);
+    let r = stop(&h, &t, &p, &c).await;
+    assert_eq!(calls(&h), before + 1, "the whole text is sent once at stop");
+    assert!(r.error.is_none(), "{:?}", r.error);
+    assert!(r.tidy_fallback.is_some());
+    assert!(r.model.is_some(), "the AI cleanup ran (the fake model returns the text unchanged)");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn whole_text_modes_are_never_tidied_in_parts() {
     // Email (Gmail), AI Prompt (Claude), List (chosen as the default), and a custom mode that
     // changes the layout.

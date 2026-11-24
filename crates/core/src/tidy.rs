@@ -417,7 +417,9 @@ impl Engine {
         }
         let why = |s: &str| Err(NotUsed::Whole(s.to_string()));
         if let Some(off) = snap.off {
-            return Err(snap.failure.filter(ai_unreachable).map(|e| NotUsed::AiDown(off.clone(), e)).unwrap_or(NotUsed::Whole(off)));
+            // A part that failed earlier while talking: only a bad key or no credit is still true
+            // at stop. A network blip or timeout may be over, so clean the whole text normally.
+            return Err(snap.failure.filter(key_or_credit).map(|e| NotUsed::AiDown(off.clone(), e)).unwrap_or(NotUsed::Whole(off)));
         }
         let Some(recipe) = snap.recipe else { return why("no recipe") };
         let settings = self.settings();
@@ -523,6 +525,10 @@ enum NotUsed {
     Whole(String),
     /// The AI can't be reached right now (offline, key, credit): no point asking again.
     AiDown(String, ProviderError),
+}
+
+fn key_or_credit(e: &ProviderError) -> bool {
+    matches!(e.kind, ErrorKind::Auth | ErrorKind::Quota)
 }
 
 fn ai_unreachable(e: &ProviderError) -> bool {
