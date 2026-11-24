@@ -105,18 +105,19 @@ fn cuts_at_the_latest_safe_sentence_end() {
     assert_eq!(choose_cut(&rest, &p[2]), Some(rest.len()));
     // Too short: no cut.
     assert_eq!(choose_cut(&p[0], &p[1]), None);
-    // A correction right after the end: cut a sentence earlier instead, or not at all when
-    // that would be too short.
+    // A correction anywhere after a possible cut (it may refer back across it): no cut before
+    // it, however much text there is.
     let fix = "No wait, it was pears.";
     assert_eq!(choose_cut(&rest, fix), None);
     let rest3 = p.join(" ");
-    let cut = choose_cut(&rest3, fix).unwrap();
-    assert_eq!(&rest3[..cut], format!("{} {} {}", p[0], p[1], sentence(4)));
-    // A correction cue in the last words before a cut moves the cut too (and the cut before
-    // it, which the cue would follow): the part ends a sentence earlier.
+    assert_eq!(choose_cut(&rest3, fix), None);
+    assert_eq!(choose_cut(&rest3, &format!("{} {} Actually Kilo bought pears.", sentence(9), sentence(10))), None);
+    // A correction in the last words before a cut: no cut there either.
     let rest2 = format!("{} Sorry, it was Kilo.", p.join(" "));
-    let cut = choose_cut(&rest2, &pieces(4)[3]).unwrap();
-    assert_eq!(&rest2[..cut], format!("{} {} {}", p[0], p[1], sentence(4)));
+    assert_eq!(choose_cut(&rest2, &pieces(4)[3]), None);
+    // Once the correction is well inside the part, the part can end after it.
+    let rest4 = format!("{} Sorry, Kilo came too. {} {}", p[0], p[1], p[2]);
+    assert_eq!(choose_cut(&rest4, &pieces(4)[3]), Some(rest4.len()));
     // "Scratch that" anywhere later: no cut before it.
     assert_eq!(choose_cut(&rest, "Then lots more words here. Scratch that, none of it."), None);
 }
@@ -367,11 +368,12 @@ async fn correction_in_the_tail_cleans_the_whole_text() {
     let mut p = pieces(8);
     p[7] = format!("{} No wait, make that Thursday.", sentence(14));
     feed_all(&t, &p).await;
-    assert_eq!(t.stats().calls, 3);
+    // The third part would end right before the correction, so it is not tidied at all.
+    assert_eq!(t.stats().calls, 2);
     let r = stop(&h, &t, &p, &c).await;
     assert_whole_text(&h, &r, &p);
     assert!(r.tidy_fallback.as_deref().unwrap().contains("correction near the end"), "{:?}", r.tidy_fallback);
-    assert_eq!(r.tidy_calls, 3);
+    assert_eq!(r.tidy_calls, 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -404,6 +406,149 @@ async fn scratch_that_after_the_first_part_cleans_the_whole_text() {
     let r = stop(&h, &t, &p, &c).await;
     assert_whole_text(&h, &r, &p);
     assert!(r.tidy_fallback.as_deref().unwrap().contains("scratch that"), "{:?}", r.tidy_fallback);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_short_correction_anywhere_after_the_first_part_cleans_the_whole_text() {
+    for cue in ["Actually, Delta bought pears.", "Sorry, it was Echo who went.", "I mean the other market.", "Make it Thursday instead."] {
+        let h = harness();
+        let c = ctx("notepad.exe", "");
+        let t = tidy_for(&h, &c);
+        let mut p = pieces(8);
+        // Deep inside a later piece, more than 12 words after any part boundary; it may refer
+        // back to something already tidied.
+        p[4] = format!("{} {cue}", sentence(8));
+        feed_all(&t, &p).await;
+        let st = t.stats();
+        assert_eq!(st.calls, 1, "{cue}");
+        assert!(st.off.as_deref().unwrap().contains("correction after a tidied part"), "{cue}: {st:?}");
+        let r = stop(&h, &t, &p, &c).await;
+        assert_whole_text(&h, &r, &p);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn context_around_the_cursor_at_stop_still_uses_the_parts() {
+    // Context awareness on (default). The tidier started without the field's text; at stop
+    // the text around the cursor is known (as on Windows, where it's read after the start).
+    let h = harness();
+    let start = ctx("notepad.exe", "");
+    let t = tidy_for(&h, &start);
+    let p = pieces(8);
+    feed_all(&t, &p).await;
+    t.user_stopped();
+    let mut at_stop = start.clone();
+    at_stop.text_before = Some("Notes from today:".into());
+    at_stop.text_after = Some("more to follow".into());
+    let raw = p.join(" ");
+    let r = h.engine.clean_dictation(&raw, &at_stop, Some(80_000), Some(&t)).await;
+    assert_eq!(r.chunked, 3, "{:?}", r.tidy_fallback);
+    // Fitted to the stop-time context exactly as the whole-text path does: a space after the
+    // colon, and the final full stop dropped before the lowercase text after the cursor.
+    let joined = format!("{}\n\n{}\n\n{}\n\n{}", p[..3].join(" "), p[3..5].join(" "), p[5..7].join(" "), p[7]);
+    assert_eq!(r.text, crate::text::fit_to_context(&joined, Some("Notes from today:"), Some("more to follow")));
+    assert!(r.text.starts_with(" Alpha"));
+    assert!(r.text.ends_with("apples "));
+    // Empty fields (UI Automation reports Some("") for them) don't matter either.
+    let h = harness();
+    let t = tidy_for(&h, &start);
+    feed_all(&t, &p).await;
+    t.user_stopped();
+    let mut empty = start.clone();
+    empty.text_before = Some(String::new());
+    empty.text_after = Some(String::new());
+    let r = h.engine.clean_dictation(&raw, &empty, Some(80_000), Some(&t)).await;
+    assert_eq!(r.chunked, 3, "{:?}", r.tidy_fallback);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn field_context_arriving_after_the_start_reaches_the_first_part_and_the_result() {
+    let h = harness();
+    let p = pieces(7);
+    for x in &p {
+        h.stt.script.lock().unwrap().push_back(Ok(x.clone()));
+    }
+    let mut s = h.engine.start_session(RecordingKind::Dictation, ctx("notepad.exe", "notes.txt - Notepad"), 48_000, 2, tokio::runtime::Handle::current()).unwrap();
+    for i in 0..7 {
+        for chunk in audio48(&[(true, 9_000), (false, 1_000)]).chunks(960) {
+            s.push(chunk);
+        }
+        if i == 0 {
+            // UI Automation has read the field (the controller passes it on within ~1 s).
+            s.set_field_context(Some("Shopping notes:".into()), Some(String::new()));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(80));
+    }
+    s.tidy.as_ref().unwrap().idle().await;
+    let during = s.tidy_stats().unwrap();
+    assert!(during.calls >= 1, "{during:?}");
+    let first = h.llm.requests.lock().unwrap()[0].user.clone();
+    assert!(first.contains("Text already in the field"), "the first part gets the text before the cursor: {first}");
+    assert!(first.contains("Shopping notes:"));
+    let mut rec = s.finish();
+    // After stop, the controller merges what it read (here: the field changed meanwhile).
+    rec.ctx.text_before = Some("Shopping notes for Sunday:".into());
+    rec.ctx.text_after = Some(String::new());
+    let id = rec.id.clone();
+    let Outcome::Text(out) = h.engine.process(rec, &no_progress()).await.unwrap() else { panic!() };
+    let item = h.engine.db.get(&id).unwrap().unwrap();
+    let tm = item.timings.unwrap();
+    assert!(tm["chunked"].as_u64().unwrap() >= 1, "{tm}");
+    assert!(tm["chunkFallback"].is_null(), "{tm}");
+    assert!(out.final_text.starts_with(" Alpha"), "fitted after the colon: {:?}", out.final_text);
+    assert_eq!(out.final_text.trim().replace("\n\n", " "), item.raw_text.unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn code_and_unknown_apps_join_parts_with_a_space() {
+    for (exe, title) in [("code.exe", "main.rs - VS Code"), ("someapp.exe", "Some App"), ("chrome.exe", "Some page - Google Chrome")] {
+        let h = harness();
+        let c = ctx(exe, title);
+        let t = tidy_for(&h, &c);
+        let p = pieces(8);
+        feed_all(&t, &p).await;
+        let r = stop(&h, &t, &p, &c).await;
+        assert_eq!(r.chunked, 3, "{exe}");
+        assert_eq!(r.text, p.join(" "), "{exe}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn offline_tail_does_not_ask_the_ai_again_for_the_whole_text() {
+    let h = harness();
+    let c = ctx("notepad.exe", "");
+    let t = tidy_for(&h, &c);
+    let p = pieces(8);
+    *h.llm.fail_if.lock().unwrap() = Some((sentence(14), sentence(0), ProviderError::new(ErrorKind::Network, "Fake", "offline")));
+    feed_all(&t, &p).await;
+    let r = stop(&h, &t, &p, &c).await;
+    // The tail was tried (with the usual retries), then the text was finished without the AI,
+    // exactly as the whole-text path does after its own failure; no whole-text AI call.
+    let raw = p.join(" ");
+    assert!(transcripts(&h).iter().all(|s| s != &raw), "no second wait for the whole text");
+    assert_eq!(r.error.as_ref().map(|e| e.kind), Some(ErrorKind::Network));
+    assert_eq!(r.chunked, 0);
+    assert!(r.tidy_fallback.as_deref().unwrap().contains("last part"));
+    assert_eq!(r.text, raw, "the transcript with the deterministic fixes, nothing lost");
+    let h2 = harness();
+    *h2.llm.fail.lock().unwrap() = Some(ProviderError::new(ErrorKind::Network, "Fake", "offline"));
+    let whole = h2.engine.clean_text_for(&raw, &c, None, Some(80_000)).await;
+    assert_eq!(r.text, whole.text);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_part_failing_with_a_bad_key_does_not_ask_the_ai_again_at_stop() {
+    let h = harness();
+    let c = ctx("notepad.exe", "");
+    let t = tidy_for(&h, &c);
+    let p = pieces(8);
+    *h.llm.fail_if.lock().unwrap() = Some((sentence(6), sentence(0), ProviderError::new(ErrorKind::Auth, "Fake", "401")));
+    feed_all(&t, &p).await;
+    assert_eq!(t.stats().calls, 2);
+    let r = stop(&h, &t, &p, &c).await;
+    assert_eq!(calls(&h), 2, "nothing more is sent after a key failure");
+    assert_eq!(r.error.as_ref().map(|e| e.kind), Some(ErrorKind::Auth));
+    assert_eq!(r.text, p.join(" "));
 }
 
 #[tokio::test(flavor = "multi_thread")]

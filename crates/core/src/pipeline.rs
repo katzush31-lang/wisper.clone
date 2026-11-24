@@ -614,6 +614,20 @@ impl Engine {
     /// Like `clean_text`; `duration_ms` is the recording length, which lets short dictations
     /// use the fast model (see `dictation_model`). None = always the normal model.
     pub async fn clean_text_for(&self, raw: &str, ctx: &CaptureContext, forced_mode: Option<&str>, duration_ms: Option<u64>) -> CleanResult {
+        self.clean_text_with(raw, ctx, forced_mode, duration_ms, None).await
+    }
+
+    /// `clean_text_for`, where `ai_failed` (when set) says the AI can't be reached right now
+    /// (it just failed with that error): the result is then exactly what this path gives after
+    /// its own AI call fails, without calling it again.
+    pub(crate) async fn clean_text_with(
+        &self,
+        raw: &str,
+        ctx: &CaptureContext,
+        forced_mode: Option<&str>,
+        duration_ms: Option<u64>,
+        ai_failed: Option<ProviderError>,
+    ) -> CleanResult {
         let settings = self.settings();
         let (mode, text) = self.choose_mode(raw, &ctx.app, forced_mode);
         let entries = self.db.dict_all().unwrap_or_default();
@@ -662,7 +676,10 @@ impl Engine {
         let (body, clean, error) = if !llm_used {
             (deterministic(&fixed), None, None)
         } else {
-            let mut r = self.llm_cleanup(&fixed, &mode, settings.cleanup_level, ctx, before.clone(), use_ctx, &entries, &model_id).await;
+            let mut r = match ai_failed {
+                Some(e) => Err(e),
+                None => self.llm_cleanup(&fixed, &mode, settings.cleanup_level, ctx, before.clone(), use_ctx, &entries, &model_id).await,
+            };
             // The fast model may be unavailable on this account (retired, renamed, no access):
             // try the normal model once before giving up on AI cleanup.
             if fast && matches!(&r, Err(e) if e.kind == ErrorKind::BadRequest) {
@@ -1372,6 +1389,16 @@ impl Session {
             self.tidy.clone(),
         );
         self.jobs.push(job);
+    }
+
+    /// The text around the cursor, as soon as it has been read (it takes a moment after the
+    /// recording starts). Long dictations tidied while talking use it for their first part.
+    pub fn set_field_context(&mut self, before: Option<String>, after: Option<String>) {
+        self.ctx.text_before = before.clone();
+        self.ctx.text_after = after.clone();
+        if let Some(t) = &self.tidy {
+            t.set_field_context(before, after);
+        }
     }
 
     /// What has been tidied so far while the user talks (None when tidying isn't on).

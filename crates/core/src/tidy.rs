@@ -14,7 +14,7 @@
 //!
 //! It is only an accelerator. The raw transcript is saved as always, and the normal whole-text
 //! cleanup (today's path, unchanged) is used whenever the parts might not join up exactly:
-//! a possible self-correction near a part boundary or in the tail, a "scratch that" after the
+//! a possible self-correction ("actually", "I mean", "scratch that", …) anywhere after the
 //! first part, a mode whose layout depends on the whole text (Email, List, AI Prompt, custom
 //! modes that change layout, Auto in email/AI apps), a spoken mode switch, something that
 //! sounds like a list, settings/dictionary changed while talking, a snippet or dictionary
@@ -56,7 +56,7 @@ const CUE_WINDOW_WORDS: usize = 12;
 /// Words that often take back something said just before ("Tuesday, no wait, Wednesday").
 const WEAK_CUES: &[&str] = &[
     "no wait", "wait no", "wait wait", "no no", "i mean", "i meant", "actually", "sorry", "or rather", "change that",
-    "make that", "correction", "oops", "hold on", "not that", "rephrase",
+    "make that", "make it", "correction", "oops", "hold on", "not that", "rephrase",
 ];
 /// Phrases that can take back something said much earlier.
 const STRONG_CUES: &[&str] = &[
@@ -117,12 +117,6 @@ pub fn strong_cue(text: &str) -> Option<&'static str> {
     find_cue(&words(text), STRONG_CUES)
 }
 
-fn cue_in_first_words(text: &str, n: usize) -> Option<&'static str> {
-    let ws = words(text);
-    let ws = &ws[..ws.len().min(n)];
-    find_cue(ws, STRONG_CUES).or_else(|| find_cue(ws, WEAK_CUES))
-}
-
 fn cue_in_last_words(text: &str, n: usize) -> Option<&'static str> {
     let ws = words(text);
     let ws = &ws[ws.len().saturating_sub(n)..];
@@ -171,8 +165,8 @@ pub fn sentence_ends(s: &str) -> Vec<usize> {
 
 /// Where to end the next part in `rest` (text not yet in a part); `after_known` is what was
 /// said after `rest` so far (the held-back piece). Picks the latest sentence end that leaves at
-/// least `MIN_PART_WORDS` words and has no correction cue near it on either side, and nothing
-/// later that could take it back.
+/// least `MIN_PART_WORDS` words, with no correction cue in its last words and none anywhere
+/// after it (a correction after a tidied part makes the whole text be cleaned at stop).
 pub fn choose_cut(rest: &str, after_known: &str) -> Option<usize> {
     for cut in sentence_ends(rest).into_iter().rev() {
         let part = &rest[..cut];
@@ -180,7 +174,7 @@ pub fn choose_cut(rest: &str, after_known: &str) -> Option<usize> {
             break;
         }
         let after = format!("{} {}", &rest[cut..], after_known);
-        if cue_in_last_words(part, CUE_WINDOW_WORDS).is_some() || cue_in_first_words(&after, CUE_WINDOW_WORDS).is_some() || strong_cue(&after).is_some() {
+        if cue_in_last_words(part, CUE_WINDOW_WORDS).is_some() || correction_cue(&after).is_some() {
             continue;
         }
         return Some(cut);
@@ -209,7 +203,9 @@ pub fn mode_allows_parts(mode: &Mode, category: Option<AppCategory>) -> Result<(
 // ---------------------------------------------------------------------------- recipe
 
 /// Everything that decides how a dictation is cleaned. Parts are only used when the recipe
-/// at stop is the same as when they were cleaned.
+/// at stop is the same as when they were cleaned. The text around the cursor is not compared:
+/// it may arrive after parts were tidied (or only at stop); the first part gets it when it is
+/// known by then, and the text at stop always uses the stop-time context.
 #[derive(Clone)]
 pub(crate) struct Recipe {
     mode: Mode,
@@ -222,7 +218,8 @@ pub(crate) struct Recipe {
     use_ctx: bool,
     before: Option<String>,
     after: Option<String>,
-    /// How parts are joined: a blank line (documents), or a space (chat).
+    /// How parts are joined: a blank line (documents, notes, email apps), or a space (chat,
+    /// code, other apps).
     sep: &'static str,
 }
 
@@ -239,8 +236,6 @@ impl Recipe {
             && rules(&self.entries) == rules(&o.entries)
             && snips(&self.snips) == snips(&o.snips)
             && self.use_ctx == o.use_ctx
-            && self.before == o.before
-            && self.after == o.after
             && self.sep == o.sep
     }
 }
@@ -307,8 +302,9 @@ impl Engine {
         let snips = self.db.snippets_all().unwrap_or_default();
         let excluded = settings.context_excluded_apps.iter().any(|a| a.eq_ignore_ascii_case(&ctx.app.exe));
         let use_ctx = settings.context_awareness && !excluded;
-        let chat = mode.id == "casual"
-            || (mode.id == "auto" && matches!(ctx.app.category, Some(AppCategory::PersonalChat) | Some(AppCategory::WorkChat)));
+        // Paragraphs are expected in documents, notes and email apps; elsewhere (chat, code,
+        // unknown apps) a part boundary must not add a blank line.
+        let paragraphs = mode.id != "casual" && matches!(ctx.app.category, Some(AppCategory::Document) | Some(AppCategory::Email));
         Ok(Recipe {
             system: cleanup_system_blocks(&entries, &mode, settings.cleanup_level),
             mode,
@@ -320,7 +316,7 @@ impl Engine {
             use_ctx,
             before: if use_ctx { ctx.text_before.clone() } else { None },
             after: if use_ctx { ctx.text_after.clone() } else { None },
-            sep: if chat { " " } else { "\n\n" },
+            sep: if paragraphs { "\n\n" } else { " " },
         })
     }
 
@@ -340,7 +336,10 @@ impl Engine {
         let (with_ph, map) = snippets::insert_placeholders(raw, &r.snips);
         let (with_ph, map) = snippets::renumber_placeholders(&with_ph, map, ph_offset);
         let (fixed, fixes) = dictionary::apply_replacements(&with_ph, &r.entries);
-        let mut c = cleanup_context_for(ctx, if index == 1 { r.before.clone() } else { None }, r.use_ctx);
+        // The first part gets the text before the cursor as known now (it can arrive after the
+        // recording started); later parts get the tidied text before them instead.
+        let before = if index == 1 && r.use_ctx { ctx.text_before.clone() } else { None };
+        let mut c = cleanup_context_for(ctx, before, r.use_ctx);
         c.talking_part = Some(TalkingPart { index, last });
         c.before_part = before_part;
         let req = TextRequest {
@@ -383,7 +382,7 @@ impl Engine {
         }
         Some(Arc::new(Tidy {
             engine: self.clone(),
-            ctx: ctx.clone(),
+            ctx: Mutex::new(ctx.clone()),
             rt,
             st: Mutex::new(TidyState::default()),
             changed: watch::channel(0).0,
@@ -393,35 +392,32 @@ impl Engine {
     /// Cleans a finished dictation: from the parts tidied while the user talked when they can
     /// be used, otherwise exactly as `clean_text_for` (the whole text at once).
     pub async fn clean_dictation(&self, raw: &str, ctx: &CaptureContext, duration_ms: Option<u64>, tidy: Option<&Arc<Tidy>>) -> CleanResult {
-        let mut calls = 0;
-        let mut why = None;
-        if let Some(t) = tidy {
-            match self.finish_in_parts(raw, ctx, duration_ms, t).await {
-                Ok(r) => return r,
-                Err(reason) => {
-                    calls = t.stats().calls;
-                    if let Some(reason) = &reason {
-                        tracing::info!("tidy while talking not used ({reason}); cleaning the whole text");
-                    }
-                    why = reason;
-                }
-            }
+        let Some(t) = tidy else { return self.clean_text_for(raw, ctx, None, duration_ms).await };
+        let (why, ai_failed) = match self.finish_in_parts(raw, ctx, duration_ms, t).await {
+            Ok(r) => return r,
+            Err(NotUsed::Nothing) => (None, None),
+            Err(NotUsed::Whole(reason)) => (Some(reason), None),
+            Err(NotUsed::AiDown(reason, e)) => (Some(reason), Some(e)),
+        };
+        if let Some(reason) = &why {
+            tracing::info!("tidy while talking not used ({reason}); cleaning the whole text");
         }
-        let mut r = self.clean_text_for(raw, ctx, None, duration_ms).await;
-        r.tidy_calls = calls;
+        // The AI just failed in a way a second try won't fix right now (offline, key, credit):
+        // finish as the whole-text path does after its own failure, without waiting again.
+        let mut r = self.clean_text_with(raw, ctx, None, duration_ms, ai_failed).await;
+        r.tidy_calls = t.stats().calls;
         r.tidy_fallback = why;
         r
     }
 
-    /// Err(None): nothing was tidied while talking. Err(Some(why)): parts can't be used.
-    async fn finish_in_parts(&self, raw: &str, ctx: &CaptureContext, duration_ms: Option<u64>, tidy: &Arc<Tidy>) -> Result<CleanResult, Option<String>> {
+    async fn finish_in_parts(&self, raw: &str, ctx: &CaptureContext, duration_ms: Option<u64>, tidy: &Arc<Tidy>) -> Result<CleanResult, NotUsed> {
         let snap = tidy.stop();
         if snap.calls == 0 {
-            return Err(None);
+            return Err(NotUsed::Nothing);
         }
-        let why = |s: &str| Err(Some(s.to_string()));
+        let why = |s: &str| Err(NotUsed::Whole(s.to_string()));
         if let Some(off) = snap.off {
-            return Err(Some(off));
+            return Err(snap.failure.filter(ai_unreachable).map(|e| NotUsed::AiDown(off.clone(), e)).unwrap_or(NotUsed::Whole(off)));
         }
         let Some(recipe) = snap.recipe else { return why("no recipe") };
         let settings = self.settings();
@@ -431,7 +427,7 @@ impl Engine {
         if settings.providers.fast_cleanup.skip_ai_for_tiny && text::word_count(raw) <= crate::quick::DEFAULT_MAX_WORDS {
             return why("tiny dictation");
         }
-        let now = self.tidy_recipe(raw, ctx).map_err(Some)?;
+        let now = self.tidy_recipe(raw, ctx).map_err(NotUsed::Whole)?;
         if !now.same_as(&recipe) {
             return why("the mode, settings or dictionary changed while talking");
         }
@@ -445,7 +441,7 @@ impl Engine {
         }
         let tail = raw[covered.len()..].trim();
         if let Some(c) = correction_cue(tail) {
-            return Err(Some(format!("a possible correction near the end (\"{c}\")")));
+            return Err(NotUsed::Whole(format!("a possible correction near the end (\"{c}\")")));
         }
         let flight_canon = snap.in_flight_raw.as_deref().map(|f| canonical(f, &recipe));
         let tail_canon = canonical(tail, &recipe);
@@ -474,18 +470,26 @@ impl Engine {
         };
         let (flight, tail_result) = tokio::join!(tidy.wait_in_flight(snap.parts.len()), tail_job);
         let mut parts = snap.parts;
-        if let Some(p) = flight.map_err(Some)? {
-            parts.push(p);
+        match flight {
+            Ok(Some(p)) => parts.push(p),
+            // A part was being tidied at stop but nothing came back: don't guess.
+            Ok(None) if snap.in_flight_raw.is_some() => return why("a part being tidied at stop went missing"),
+            Ok(None) => {}
+            Err((reason, Some(e))) if ai_unreachable(&e) => return Err(NotUsed::AiDown(reason, e)),
+            Err((reason, _)) => return Err(NotUsed::Whole(reason)),
         }
         let tidied_while_talking = parts.len();
         match tail_result {
             Ok(Some(p)) => parts.push(p),
             Ok(None) => {}
-            Err(e) => return Err(Some(format!("the last part couldn't be tidied ({})", e.message))),
+            Err(e) => {
+                let reason = format!("the last part couldn't be tidied ({})", e.message);
+                return Err(if ai_unreachable(&e) { NotUsed::AiDown(reason, e) } else { NotUsed::Whole(reason) });
+            }
         }
 
         // Finish exactly like the whole-text path: dictionary pass on the model's answer,
-        // snippets back in, fitted to the text around the cursor.
+        // snippets back in, fitted to the text around the cursor as known at stop.
         let joined = parts.iter().map(|p| p.out.as_str()).collect::<Vec<_>>().join(recipe.sep);
         let (t2, more) = dictionary::apply_replacements(&joined, &recipe.entries);
         let map: Vec<(String, String, i64)> = parts.iter().flat_map(|p| p.map.clone()).collect();
@@ -493,7 +497,7 @@ impl Engine {
             let _ = self.db.snippet_bump(*sid);
         }
         let (restored, _) = snippets::restore_placeholders(&t2, &map);
-        let final_text = text::fit_to_context(&restored, recipe.before.as_deref(), recipe.after.as_deref());
+        let final_text = text::fit_to_context(&restored, now.before.as_deref(), now.after.as_deref());
         let fixes = parts.iter().map(|p| p.fixes).sum::<usize>() + more;
         Ok(CleanResult {
             text: final_text,
@@ -509,6 +513,20 @@ impl Engine {
             tidy_fallback: None,
         })
     }
+}
+
+/// Why parts tidied while talking weren't used.
+enum NotUsed {
+    /// Nothing was tidied while talking.
+    Nothing,
+    /// Clean the whole text instead (the reason is recorded in History).
+    Whole(String),
+    /// The AI can't be reached right now (offline, key, credit): no point asking again.
+    AiDown(String, ProviderError),
+}
+
+fn ai_unreachable(e: &ProviderError) -> bool {
+    matches!(e.kind, ErrorKind::Network | ErrorKind::Timeout | ErrorKind::Auth | ErrorKind::Quota)
 }
 
 // ---------------------------------------------------------------------------- the background tidier
@@ -544,6 +562,8 @@ struct TidyState {
     /// Snippet placeholders used by parts so far.
     ph_used: usize,
     off: Option<String>,
+    /// The error of a part that failed, when one did.
+    failure: Option<ProviderError>,
     stopped: bool,
     cancelled: bool,
     calls: usize,
@@ -552,6 +572,7 @@ struct TidyState {
 struct Snapshot {
     calls: usize,
     off: Option<String>,
+    failure: Option<ProviderError>,
     recipe: Option<Recipe>,
     parts: Vec<Part>,
     covered: String,
@@ -562,7 +583,8 @@ struct Snapshot {
 /// Tidies a dictation in parts while the user talks. Fed by the piece jobs; read at stop.
 pub struct Tidy {
     engine: Arc<Engine>,
-    ctx: CaptureContext,
+    /// Where the text is going. The text around the cursor may arrive after the start.
+    ctx: Mutex<CaptureContext>,
     rt: tokio::runtime::Handle,
     st: Mutex<TidyState>,
     changed: watch::Sender<u64>,
@@ -613,6 +635,15 @@ impl Tidy {
     pub fn piece_failed(&self, index: usize) {
         self.lock().off.get_or_insert_with(|| format!("piece {index} couldn't be transcribed"));
         self.bump();
+    }
+
+    /// The text around the cursor, read once recording has started (UI Automation takes a
+    /// moment). Used for the first part's context; the finished text is fitted to the context
+    /// known at stop.
+    pub fn set_field_context(&self, before: Option<String>, after: Option<String>) {
+        let mut c = self.ctx.lock().unwrap_or_else(|p| p.into_inner());
+        c.text_before = before;
+        c.text_after = after;
     }
 
     /// No more parts from now on (the recording became a voice command, …).
@@ -680,8 +711,9 @@ impl Tidy {
             st.off = Some("it sounds like a list".into());
             return;
         }
+        let ctx = self.ctx.lock().unwrap_or_else(|p| p.into_inner()).clone();
         if st.recipe.is_none() {
-            match self.engine.tidy_recipe(&text, &self.ctx) {
+            match self.engine.tidy_recipe(&text, &ctx) {
                 Ok(r) => st.recipe = Some(r),
                 Err(e) => {
                     st.off = Some(e);
@@ -691,9 +723,9 @@ impl Tidy {
         }
         let rest = &text[st.claimed..];
         if !st.parts.is_empty() {
-            // Something said right after a part, or "scratch that" anywhere later, may change
-            // a part already tidied: the whole text is cleaned at stop instead.
-            if let Some(c) = cue_in_first_words(rest, CUE_WINDOW_WORDS).or_else(|| strong_cue(rest)) {
+            // A correction anywhere after a tidied part ("actually…", "I mean…", "scratch
+            // that") may refer back into it: the whole text is cleaned at stop instead.
+            if let Some(c) = correction_cue(rest) {
                 st.off = Some(format!("a possible correction after a tidied part (\"{c}\")"));
                 return;
             }
@@ -710,7 +742,7 @@ impl Tidy {
         let me = self.clone();
         let part_raw = raw.clone();
         let handle = self.rt.spawn(async move {
-            let r = me.engine.clean_part(&recipe, &me.ctx, &part_raw, ph_offset, before_part, index, false).await;
+            let r = me.engine.clean_part(&recipe, &ctx, &part_raw, ph_offset, before_part, index, false).await;
             me.part_finished(r);
         });
         st.in_flight = Some(InFlight { raw, handle });
@@ -728,6 +760,7 @@ impl Tidy {
                 Err(e) => {
                     tracing::info!("tidying a part while talking failed: {e}");
                     st.off.get_or_insert_with(|| format!("a part couldn't be tidied ({})", e.message));
+                    st.failure.get_or_insert(e);
                 }
             }
             self.pump(&mut st);
@@ -744,6 +777,7 @@ impl Tidy {
         Snapshot {
             calls: st.calls,
             off: if st.cancelled { Some("cancelled".into()) } else { st.off.clone() },
+            failure: st.failure.clone(),
             recipe: st.recipe.clone(),
             parts: st.parts.clone(),
             covered: full.get(..st.claimed).unwrap_or("").to_string(),
@@ -753,7 +787,7 @@ impl Tidy {
     }
 
     /// Waits for the part being tidied at stop (if any), which becomes part `done` (from 0).
-    async fn wait_in_flight(&self, done: usize) -> Result<Option<Part>, String> {
+    async fn wait_in_flight(&self, done: usize) -> Result<Option<Part>, (String, Option<ProviderError>)> {
         loop {
             let mut rx = self.changed.subscribe();
             {
@@ -761,14 +795,14 @@ impl Tidy {
                 match &st.in_flight {
                     None => {
                         if let Some(off) = &st.off {
-                            return Err(off.clone());
+                            return Err((off.clone(), st.failure.clone()));
                         }
                         if st.cancelled {
-                            return Err("cancelled".into());
+                            return Err(("cancelled".into(), None));
                         }
                         return Ok(st.parts.get(done).cloned());
                     }
-                    Some(f) if f.handle.is_finished() => return Err("tidying a part stopped unexpectedly".into()),
+                    Some(f) if f.handle.is_finished() => return Err(("tidying a part stopped unexpectedly".into(), None)),
                     Some(_) => {}
                 }
             }

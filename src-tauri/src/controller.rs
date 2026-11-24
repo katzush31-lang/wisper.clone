@@ -37,6 +37,8 @@ enum RecMsg {
     Finish(Sender<FinishedRecording>),
     Cancel,
     SetKind(RecordingKind),
+    /// The text around the cursor, once UI Automation has read it (not for password fields).
+    FieldContext(Option<String>, Option<String>),
 }
 
 /// Pausing/muting other audio: the token from ducking, and whether the recording already ended
@@ -370,8 +372,14 @@ impl Controller {
         let excluded = settings.context_excluded_apps.iter().any(|a| a.eq_ignore_ascii_case(&app_info.exe));
         if target == Target::App && ((settings.context_awareness && !excluded) || kind == RecordingKind::Command) {
             let context = context.clone();
+            let ctx_tx = tx.clone();
             std::thread::spawn(move || {
-                *context.lock() = Some(platform::read_context(900));
+                let c = platform::read_context(900);
+                // Long dictations tidied while talking use it for their first part.
+                if !c.is_password {
+                    let _ = ctx_tx.send(RecMsg::FieldContext(c.before.clone(), c.after.clone()));
+                }
+                *context.lock() = Some(c);
             });
         }
         let hands_free_flag = Arc::new(AtomicBool::new(hands_free));
@@ -452,9 +460,17 @@ impl Controller {
                     peak = peak.max(level);
                 }
                 Ok(RecMsg::Finish(reply)) => {
-                    // Take whatever audio is still queued, then close.
-                    while let Ok(RecMsg::Audio(chunk)) = rx.try_recv() {
-                        session.push(&chunk);
+                    // Take whatever audio is still queued, then close. Other messages in between
+                    // (the cursor context arriving late) must not cut the audio short.
+                    while let Ok(msg) = rx.try_recv() {
+                        match msg {
+                            RecMsg::Audio(chunk) => {
+                                session.push(&chunk);
+                            }
+                            RecMsg::FieldContext(before, after) => session.set_field_context(before, after),
+                            // As before, a kind change or cancel after "finish" is ignored.
+                            RecMsg::SetKind(_) | RecMsg::Finish(_) | RecMsg::Cancel => {}
+                        }
                     }
                     let _ = reply.send(session.finish());
                     return;
@@ -464,6 +480,7 @@ impl Controller {
                     return;
                 }
                 Ok(RecMsg::SetKind(k)) => session.set_kind(k),
+                Ok(RecMsg::FieldContext(before, after)) => session.set_field_context(before, after),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
                     let _ = session.finish();
