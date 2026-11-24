@@ -42,6 +42,7 @@ Wisper starts recording the instant you press the keys, so you don't need to pau
 In **Settings → AI providers**:
 - **Live transcription** (on): Wisper transcribes while you talk, so text is ready as soon as you stop. Your recording is still saved; if the live connection drops, Wisper finishes from the recording.
 - **Use a faster model for short dictations** (on, under 30 seconds): short dictations are tidied by Claude Haiku, about twice as fast, with the same results in all our quality tests. Long ones use your main model.
+- **Tidy up while you talk** (on): long dictations are cleaned up in pieces as you speak, so the text is ready almost as soon as you stop. If you correct yourself near the end ("no wait…"), use a list or email layout, or anything else that needs the whole text, Wisper cleans it all at once as before.
 - **Skip the AI for tiny dictations** (off): very short sentences with nothing to fix are tidied instantly on your computer.
 
 **Insights** shows how long you wait after you stop talking.

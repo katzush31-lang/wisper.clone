@@ -125,6 +125,8 @@ export interface Settings {
     fastCleanup: FastCleanup;
     /** transcribe while the user talks (OpenAI Realtime); the recording is still saved */
     liveTranscription: boolean;
+    /** tidy long dictations in parts while the user talks, so only the last part is left at stop */
+    cleanWhileTalking: boolean;
   };
   typingWpm: number;
   smartFormatting: boolean;
@@ -207,6 +209,13 @@ export interface HistoryItem {
     liveConnected?: boolean;
     livePieces?: number;
     fallbackPieces?: number;
+    /** how long the user waited for the text after they stopped */
+    waitAfterStopMs?: number;
+    /** "tidy up while you talk": parts tidied while talking and used (0 = whole text cleaned at stop) */
+    chunked?: number;
+    /** background cleanup calls made while talking, and why they weren't used (if they weren't) */
+    chunkCalls?: number;
+    chunkFallback?: string | null;
   } | null;
   meta: Record<string, unknown> | null;
 }

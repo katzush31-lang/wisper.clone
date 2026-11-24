@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { api, formatDuration, type HistoryItem, type Mode } from "../../../shared/api";
 import { isTauri } from "../../../shared/tauri";
 import { ConfirmDialog, Modal, errorText, useToast } from "../../components";
-import { itemText, modelName, ms, statusInfo } from "./helpers";
+import { itemText, modelName, ms, statusInfo, tidyNote } from "./helpers";
 
 export default function HistoryDetail({
   item,
@@ -75,10 +75,12 @@ export default function HistoryDetail({
     minute: "2-digit",
   });
   const t = item.timings;
+  const tidied = tidyNote(t);
   const timing = [
     ms(t?.recordingMs) && `Recording ${ms(t?.recordingMs)}`,
     ms(t?.transcribeWaitMs) && `Waiting after you stopped ${ms(t?.transcribeWaitMs)}${t?.live ? " · live" : ""}`,
-    ms(t?.cleanupMs) && `Cleanup ${ms(t?.cleanupMs)}${t?.cleanupModel ? ` · ${modelName(t.cleanupModel)}` : ""}`,
+    ms(t?.cleanupMs) && `Cleanup ${ms(t?.cleanupMs)}${t?.cleanupModel ? ` · ${modelName(t.cleanupModel)}` : ""}${tidied ? ` · ${tidied}` : ""}`,
+    ms(t?.waitAfterStopMs) && `Text ready ${ms(t?.waitAfterStopMs)} after you stopped`,
   ].filter(Boolean);
   const facts = [
     item.appName && `in ${item.appName}`,

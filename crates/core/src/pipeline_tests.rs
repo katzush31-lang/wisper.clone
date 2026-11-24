@@ -8,10 +8,10 @@ use crate::apps;
 use crate::providers::{ErrorKind, ProviderError, TextResponse, Transcript};
 
 #[derive(Default)]
-struct FakeStt {
-    script: Mutex<VecDeque<Result<String, ProviderError>>>,
-    requests: Mutex<Vec<TranscribeRequest>>,
-    delay_ms: std::sync::atomic::AtomicU64,
+pub(super) struct FakeStt {
+    pub(super) script: Mutex<VecDeque<Result<String, ProviderError>>>,
+    pub(super) requests: Mutex<Vec<TranscribeRequest>>,
+    pub(super) delay_ms: std::sync::atomic::AtomicU64,
 }
 
 #[async_trait]
@@ -32,14 +32,20 @@ impl Transcriber for FakeStt {
 }
 
 #[derive(Default)]
-struct FakeLlm {
-    fail: Mutex<Option<ProviderError>>,
+pub(super) struct FakeLlm {
+    pub(super) fail: Mutex<Option<ProviderError>>,
     /// Fails only requests for this model.
-    fail_model: Mutex<Option<(String, ProviderError)>>,
-    requests: Mutex<Vec<TextRequest>>,
+    pub(super) fail_model: Mutex<Option<(String, ProviderError)>>,
+    pub(super) requests: Mutex<Vec<TextRequest>>,
+    /// Each answer takes this long.
+    pub(super) delay_ms: std::sync::atomic::AtomicU64,
+    /// Fails requests whose transcript contains the first text but not the second.
+    pub(super) fail_if: Mutex<Option<(String, String, ProviderError)>>,
+    /// Answers requests whose transcript contains the first text but not the second with the third.
+    pub(super) reply_if: Mutex<Option<(String, String, String)>>,
 }
 
-fn between<'a>(s: &'a str, a: &str, b: &str) -> &'a str {
+pub(super) fn between<'a>(s: &'a str, a: &str, b: &str) -> &'a str {
     let start = s.find(a).map(|i| i + a.len()).unwrap_or(0);
     let end = s[start..].find(b).map(|i| start + i).unwrap_or(s.len());
     &s[start..end]
@@ -49,12 +55,27 @@ fn between<'a>(s: &'a str, a: &str, b: &str) -> &'a str {
 impl TextModel for FakeLlm {
     async fn complete(&self, req: TextRequest) -> Result<TextResponse, ProviderError> {
         self.requests.lock().unwrap().push(req.clone());
+        let d = self.delay_ms.load(std::sync::atomic::Ordering::SeqCst);
+        if d > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(d)).await;
+        }
         if let Some(e) = self.fail.lock().unwrap().clone() {
             return Err(e);
         }
         if let Some((m, e)) = self.fail_model.lock().unwrap().clone() {
             if m == req.model {
                 return Err(e);
+            }
+        }
+        let transcript = between(&req.user, "<transcript>\n", "\n</transcript>");
+        if let Some((has, unless, e)) = self.fail_if.lock().unwrap().clone() {
+            if transcript.contains(&has) && !transcript.contains(&unless) {
+                return Err(e);
+            }
+        }
+        if let Some((has, unless, answer)) = self.reply_if.lock().unwrap().clone() {
+            if transcript.contains(&has) && !transcript.contains(&unless) {
+                return Ok(TextResponse { text: answer, input_tokens: 1, output_tokens: 1, cache_read_tokens: 0 });
             }
         }
         let body = if req.user.contains("<instruction>") {
@@ -88,14 +109,14 @@ impl ProviderFactory for Fakes {
     }
 }
 
-struct Harness {
-    engine: Arc<Engine>,
-    stt: Arc<FakeStt>,
-    llm: Arc<FakeLlm>,
+pub(super) struct Harness {
+    pub(super) engine: Arc<Engine>,
+    pub(super) stt: Arc<FakeStt>,
+    pub(super) llm: Arc<FakeLlm>,
     _dir: tempfile::TempDir,
 }
 
-fn harness() -> Harness {
+pub(super) fn harness() -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let db = Arc::new(Db::open(&dir.path().join("wisper.db")).unwrap());
     let stt = Arc::new(FakeStt::default());
@@ -108,7 +129,7 @@ fn harness() -> Harness {
 }
 
 /// 48 kHz stereo: alternating "speech" (a buzzy tone) and silence, per (is_speech, ms).
-fn audio48(pattern: &[(bool, u64)]) -> Vec<f32> {
+pub(super) fn audio48(pattern: &[(bool, u64)]) -> Vec<f32> {
     let mut out = Vec::new();
     let mut n = 0usize;
     for &(speech, ms) in pattern {
@@ -127,11 +148,11 @@ fn audio48(pattern: &[(bool, u64)]) -> Vec<f32> {
     out
 }
 
-fn ctx(exe: &str, title: &str) -> CaptureContext {
+pub(super) fn ctx(exe: &str, title: &str) -> CaptureContext {
     CaptureContext { app: apps::identify(exe, title), ..Default::default() }
 }
 
-fn record(h: &Harness, c: CaptureContext, pattern: &[(bool, u64)]) -> FinishedRecording {
+pub(super) fn record(h: &Harness, c: CaptureContext, pattern: &[(bool, u64)]) -> FinishedRecording {
     let mut s = h
         .engine
         .start_session(RecordingKind::Dictation, c, 48_000, 2, tokio::runtime::Handle::current())
@@ -142,7 +163,7 @@ fn record(h: &Harness, c: CaptureContext, pattern: &[(bool, u64)]) -> FinishedRe
     s.finish()
 }
 
-fn no_progress() -> impl Fn(Stage) + Send + Sync {
+pub(super) fn no_progress() -> impl Fn(Stage) + Send + Sync {
     |_| {}
 }
 

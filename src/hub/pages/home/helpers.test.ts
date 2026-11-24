@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { HistoryItem } from "../../../shared/api";
-import { isWaiting, keysMissing, waitingReason, waitingSummary } from "./helpers";
+import { isWaiting, keysMissing, tidyNote, waitingReason, waitingSummary } from "./helpers";
 
 function item(over: Partial<HistoryItem>): HistoryItem {
   return {
@@ -70,5 +70,18 @@ describe("keysMissing", () => {
   it("does not ask for a Claude key when cleanup uses OpenAI", () => {
     expect(keysMissing({ openai: true, anthropic: false }, "openAi")).toBe(false);
     expect(keysMissing({ openai: false, anthropic: true }, "openAi")).toBe(true);
+  });
+});
+
+describe("tidyNote", () => {
+  it("says how many parts were tidied while talking", () => {
+    expect(tidyNote({ chunked: 3, chunkCalls: 3 })).toBe("3 parts tidied while you talked");
+    expect(tidyNote({ chunked: 1, chunkCalls: 1 })).toBe("1 part tidied while you talked");
+  });
+  it("notes when background work wasn't used, and is silent otherwise", () => {
+    expect(tidyNote({ chunked: 0, chunkCalls: 2, chunkFallback: "a possible correction near the end" })).toBe("tidied all at once at the end");
+    expect(tidyNote({ chunked: 0, chunkCalls: 0 })).toBeNull();
+    expect(tidyNote({})).toBeNull();
+    expect(tidyNote(null)).toBeNull();
   });
 });

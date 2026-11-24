@@ -69,6 +69,17 @@ jobs:
             echo "No ANTHROPIC_API_KEY secret yet; skipping model comparison."
           fi
 
+      - name: Tidy up while you talk vs whole-text cleanup (only when API keys are set)
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            cargo test -p wisper-core --locked --test chunked_eval -- --ignored --nocapture
+          else
+            echo "No ANTHROPIC_API_KEY secret yet; skipping the tidy-while-talking comparison."
+          fi
+
       - name: Live transcription against the real OpenAI Realtime API (only when the key is set)
         continue-on-error: true
         env:

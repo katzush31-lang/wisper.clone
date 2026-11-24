@@ -82,6 +82,9 @@ Tick these off after installing. If something doesn't behave as described, note 
 - [ ] Insights shows a Speed card after 3 dictations.
 - [ ] Turn Wi-Fi off mid-dictation, then on, then finish: the dictation still completes (from the saved recording).
 - [ ] Optional: turn on "Skip the AI for tiny dictations", say "Sounds good." — History shows "tidied on this computer".
+- [ ] In Notepad, dictate for about a minute (several sentences, no corrections). The text appears about a second after you stop. History shows "… parts tidied while you talked" and "Text ready … after you stopped".
+- [ ] Same, but end with "…on Tuesday, no wait, Wednesday.": the text says Wednesday only; History shows "tidied all at once at the end".
+- [ ] Settings → AI providers → Speed: "Tidy up while you talk" can be switched off; long dictations then work as before.
 
 ## 11. Shortcuts anywhere and mouse shortcuts
 - [ ] Click the desktop (no text box), hold Ctrl + Win, speak, let go: it records, and the bar says "No text box was selected" with Copy. The text is in History.

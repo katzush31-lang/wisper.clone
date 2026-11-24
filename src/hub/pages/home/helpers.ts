@@ -61,6 +61,16 @@ export function modelName(id: string): string {
   return MODEL_NAMES[id] ?? id;
 }
 
+/** History detail: how much of the cleanup happened while the user was still talking. */
+export function tidyNote(t: HistoryItem["timings"]): string | null {
+  if (!t) return null;
+  if (t.chunked && t.chunked > 0) {
+    return `${t.chunked} ${t.chunked === 1 ? "part" : "parts"} tidied while you talked`;
+  }
+  if (t.chunkCalls && t.chunkCalls > 0) return "tidied all at once at the end";
+  return null;
+}
+
 /** Failed and queued recordings still hold speech; History shows them as one row. */
 export function isWaiting(i: HistoryItem): boolean {
   return i.status === "queued" || i.status === "failed";

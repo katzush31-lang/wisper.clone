@@ -13,9 +13,10 @@
   (4) shortcuts must start/stop recording regardless of focus/text box, (5) copy button on each
   History row, (6) Settings page showing the exact prompts sent to the AI, (7) "Set up AI keys"
   shown on Home although keys exist. Status: being built (see git log / TEST_STATUS.md).
-- Speed: owner finds Sonnet cleanup (~3 s on a long dictation) slow vs Wispr Flow. Options
-  discussed: Haiku for longer dictations (setting already exists), cleaning while you talk,
-  a faster inference provider. Awaiting owner's choice.
+- Speed: owner finds Sonnet cleanup (~3 s on a long dictation) slow vs Wispr Flow. Built:
+  "Tidy up while you talk" (long dictations cleaned in parts while talking; only the tail at
+  stop; whole-text fallback rules in `docs/PLAN.md`). Needs: spec-reviewer pass, the CI real-API
+  comparison (`--test chunked_eval`), and the owner's checklist (section 10).
 - Not run yet: real-API live transcription check (needs `OPENAI_API_KEY` GitHub secret).
 - Not built: learning from manual corrections; dragging/docking the floating bar.
 

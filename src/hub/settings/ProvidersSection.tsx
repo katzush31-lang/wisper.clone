@@ -261,6 +261,16 @@ export default function ProvidersSection({ settings, update }: SectionProps) {
           </>
         )}
         <SettingRow
+          title="Tidy up while you talk"
+          description="Long dictations are cleaned up in pieces as you speak, so the text is ready almost as soon as you stop."
+        >
+          <Switch
+            label="Tidy up while you talk"
+            checked={settings.providers.cleanWhileTalking ?? true}
+            onChange={(cleanWhileTalking) => setProviders({ cleanWhileTalking })}
+          />
+        </SettingRow>
+        <SettingRow
           title="Skip the AI for tiny dictations"
           description="Very short dictations with nothing to fix (no ums, corrections, numbers or Hebrew words) are tidied instantly on this computer. Anything else still goes to the AI."
         >

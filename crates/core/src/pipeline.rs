@@ -31,6 +31,21 @@ use crate::settings::{CleanupProvider, Settings};
 use crate::snippets;
 use crate::text;
 
+#[path = "tidy.rs"]
+pub mod tidy;
+pub use tidy::{Tidy, TidyStats};
+
+/// Stops (and discards) background tidying when processing ends, however it ends.
+struct CancelTidyOnDrop(Option<Arc<Tidy>>);
+
+impl Drop for CancelTidyOnDrop {
+    fn drop(&mut self) {
+        if let Some(t) = &self.0 {
+            t.cancel();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ApiKeys {
     pub openai: Option<String>,
@@ -249,6 +264,8 @@ impl Engine {
         // Live transcription connects in the background while the start sound plays; the
         // recording itself never waits for it.
         let live = self.live_setup(&ctx.app.name).map(|setup| LiveFeed::start(setup, device_rate, &rt));
+        // Long dictations are tidied in parts while the user talks (see `tidy.rs`).
+        let tidy = if kind == RecordingKind::Dictation { self.start_tidy(&ctx, rt.clone()) } else { None };
         Ok(Session {
             id,
             kind,
@@ -270,6 +287,7 @@ impl Engine {
             prev_text: Arc::new(Mutex::new(String::new())),
             write_error: None,
             live,
+            tidy,
         })
     }
 
@@ -308,6 +326,7 @@ impl Engine {
         prev_text: Arc<Mutex<String>>,
         app_name: Option<String>,
         live: Option<Arc<LiveShared>>,
+        tidy: Option<Arc<Tidy>>,
     ) -> JoinHandle<Result<String, ProviderError>> {
         let row = SegmentRow {
             dictation_id: id.to_string(),
@@ -323,6 +342,9 @@ impl Engine {
         let engine = self.clone();
         rt.spawn(async move {
             if !plan.has_speech {
+                if let Some(t) = &tidy {
+                    t.piece_done(plan.index, plan.end, "");
+                }
                 return Ok(String::new());
             }
             // Live transcription first, when it's running; otherwise (or if it fails or is
@@ -355,6 +377,13 @@ impl Engine {
                 }
             }
             let _ = engine.db.upsert_segment(&row);
+            // The text is saved; now it may be tidied in the background (an accelerator only).
+            if let Some(t) = &tidy {
+                match &result {
+                    Ok(text) => t.piece_done(plan.index, plan.end, text),
+                    Err(_) => t.piece_failed(plan.index),
+                }
+            }
             result
         })
     }
@@ -393,9 +422,12 @@ impl Engine {
         self.process_inner(rec, progress).await
     }
 
-    async fn process_inner(self: &Arc<Self>, rec: FinishedRecording, progress: &(dyn Fn(Stage) + Send + Sync)) -> Result<Outcome, PipelineError> {
+    async fn process_inner(self: &Arc<Self>, mut rec: FinishedRecording, progress: &(dyn Fn(Stage) + Send + Sync)) -> Result<Outcome, PipelineError> {
         let id = rec.id.clone();
         let stop_at = Instant::now();
+        // Parts tidied while talking: used below if they can be; however this ends (error,
+        // no speech, the caller giving up), background work stops and is discarded.
+        let tidy = CancelTidyOnDrop(rec.tidy.take().filter(|_| rec.kind == RecordingKind::Dictation));
         if !rec.heard_speech {
             // The speech detector found no speech in any piece: hide it, and keep the audio
             // for 24 hours in case very quiet speech was misjudged.
@@ -432,7 +464,7 @@ impl Engine {
         }
         progress(Stage::Cleaning);
         let _ = self.db.set_status(&id, Status::Cleaning);
-        let out = self.finish_text(&id, rec.kind, &raw, &rec.ctx, None, rec.duration_ms, transcribe_wait, stop_at).await;
+        let out = self.finish_text(&id, rec.kind, &raw, &rec.ctx, None, rec.duration_ms, transcribe_wait, stop_at, tidy.0.as_ref()).await;
         if out.is_ok() {
             let _ = self.db.merge_timings(&id, &crate::live::timings_json(rec.live.as_deref()));
         }
@@ -455,24 +487,47 @@ impl Engine {
         duration_ms: u64,
         transcribe_wait_ms: u64,
         stop_at: Instant,
+        tidy: Option<&Arc<Tidy>>,
     ) -> Result<Outcome, PipelineError> {
         let clean_start = Instant::now();
         let processed = match kind {
-            // "Redo as" (a forced mode) and recordings of unknown length use the normal model.
-            RecordingKind::Dictation => self.clean_text_for(raw, ctx, forced_mode, Some(duration_ms).filter(|_| forced_mode.is_none())).await,
+            // "Redo as" (a forced mode) and recordings of unknown length use the normal model,
+            // and always clean the whole text.
+            RecordingKind::Dictation if forced_mode.is_some() => self.clean_text_for(raw, ctx, forced_mode, None).await,
+            RecordingKind::Dictation => self.clean_dictation(raw, ctx, Some(duration_ms), tidy).await,
             RecordingKind::Command => match self.run_instruction(raw, ctx.selection.as_deref(), ctx).await {
-                Ok(t) => CleanResult { text: t.clone(), clean: Some(t), mode_id: "command".into(), mode_name: "Command".into(), fixes: 0, error: None, model: Some(cleanup_model(&self.settings())), fast: false },
+                Ok(t) => CleanResult {
+                    text: t.clone(),
+                    clean: Some(t),
+                    mode_id: "command".into(),
+                    mode_name: "Command".into(),
+                    fixes: 0,
+                    error: None,
+                    model: Some(cleanup_model(&self.settings())),
+                    fast: false,
+                    chunked: 0,
+                    tidy_calls: 0,
+                    tidy_fallback: None,
+                },
                 Err(e) => return Err(self.fail(id, e)),
             },
         };
+        let after_stop = stop_at.elapsed().as_millis() as u64;
         let timings = json!({
             "recordingMs": duration_ms,
             "transcribeWaitMs": transcribe_wait_ms,
             "cleanupMs": clean_start.elapsed().as_millis() as u64,
-            "totalAfterStopMs": stop_at.elapsed().as_millis() as u64,
+            "totalAfterStopMs": after_stop,
+            // How long the user waited for the text after they stopped.
+            "waitAfterStopMs": after_stop,
             // Which model cleaned this up, so History and the Speed card can show it.
             "cleanupModel": processed.model,
             "cleanupFast": processed.fast,
+            // "Tidy up while you talk": parts cleaned while talking and used (0 = whole text),
+            // background calls made, and why they weren't used when they weren't.
+            "chunked": processed.chunked,
+            "chunkCalls": processed.tidy_calls,
+            "chunkFallback": processed.tidy_fallback,
         });
         let settings = self.settings();
         let meta = json!({
@@ -583,7 +638,19 @@ impl Engine {
                 .with_text_before(before.as_deref());
             if let Some(t) = crate::quick::quick_clean(raw, &qc) {
                 let final_text = text::fit_to_context(&t, before.as_deref(), after.as_deref());
-                return CleanResult { text: final_text, clean: Some(t), mode_id: mode.id.clone(), mode_name: mode.name.clone(), fixes: 0, error: None, model: Some("local".into()), fast: true };
+                return CleanResult {
+                    text: final_text,
+                    clean: Some(t),
+                    mode_id: mode.id.clone(),
+                    mode_name: mode.name.clone(),
+                    fixes: 0,
+                    error: None,
+                    model: Some("local".into()),
+                    fast: true,
+                    chunked: 0,
+                    tidy_calls: 0,
+                    tidy_fallback: None,
+                };
             }
         }
 
@@ -620,7 +687,19 @@ impl Engine {
         };
         let (restored, _) = snippets::restore_placeholders(&body, &ph_map);
         let final_text = text::fit_to_context(&restored, before.as_deref(), after.as_deref());
-        CleanResult { text: final_text, clean, mode_id: mode.id.clone(), mode_name: mode.name.clone(), fixes: fixes as i64, error, model: llm_used.then_some(model_id), fast: llm_used && fast }
+        CleanResult {
+            text: final_text,
+            clean,
+            mode_id: mode.id.clone(),
+            mode_name: mode.name.clone(),
+            fixes: fixes as i64,
+            error,
+            model: llm_used.then_some(model_id),
+            fast: llm_used && fast,
+            chunked: 0,
+            tidy_calls: 0,
+            tidy_fallback: None,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -741,7 +820,7 @@ impl Engine {
                 let _ = self.db.record_mode_choice(key, mode_id);
             }
         }
-        match self.finish_text(id, RecordingKind::Dictation, &raw, &ctx, Some(mode_id), item.duration_ms as u64, 0, Instant::now()).await? {
+        match self.finish_text(id, RecordingKind::Dictation, &raw, &ctx, Some(mode_id), item.duration_ms as u64, 0, Instant::now(), None).await? {
             Outcome::Text(p) => Ok(p),
             Outcome::NoSpeech { id } => Err(PipelineError::Failed { id, message: "Nothing to process.".into(), kind: None }),
         }
@@ -770,7 +849,7 @@ impl Engine {
         let started = Instant::now();
         if let Some(raw) = item.raw_text.clone().filter(|r| !r.trim().is_empty()) {
             let _ = self.db.clear_error(id);
-            return self.finish_text(id, kind, &raw, &ctx, forced_mode, item.duration_ms as u64, 0, started).await;
+            return self.finish_text(id, kind, &raw, &ctx, forced_mode, item.duration_ms as u64, 0, started, None).await;
         }
         let audio = item.audio_path.clone().map(PathBuf::from).filter(|p| p.exists()).ok_or_else(|| PipelineError::Failed {
             id: id.into(),
@@ -852,7 +931,7 @@ impl Engine {
             return Ok(Outcome::NoSpeech { id: id.into() });
         }
         let _ = self.db.set_status(id, Status::Cleaning);
-        let out = self.finish_text(id, kind, &raw, &ctx, forced_mode, item.duration_ms as u64, started.elapsed().as_millis() as u64, started).await;
+        let out = self.finish_text(id, kind, &raw, &ctx, forced_mode, item.duration_ms as u64, started.elapsed().as_millis() as u64, started, None).await;
         if out.is_ok() && audio.extension().map(|e| e == "pcm").unwrap_or(false) {
             self.archive_audio_later(id, &audio);
         }
@@ -1004,6 +1083,13 @@ pub struct CleanResult {
     pub model: Option<String>,
     /// Whether that was the fast model for short dictations.
     pub fast: bool,
+    /// Parts tidied while the user was still talking and used for this text (0 = the whole
+    /// text was cleaned at once).
+    pub chunked: usize,
+    /// Background cleanup calls made while talking (including any that went unused).
+    pub tidy_calls: usize,
+    /// Why parts tidied while talking were not used, when there were some.
+    pub tidy_fallback: Option<String>,
 }
 
 /// Guards against the model answering or rewriting instead of cleaning: the cleaned text
@@ -1037,6 +1123,8 @@ pub(crate) fn cleanup_context_for(ctx: &CaptureContext, before: Option<String>, 
         text_before_cursor: before,
         previous_part: None,
         part: None,
+        talking_part: None,
+        before_part: None,
     }
 }
 
@@ -1205,6 +1293,8 @@ pub struct Session {
     write_error: Option<String>,
     /// Live transcription of this recording, when on.
     live: Option<LiveFeed>,
+    /// Tidying long dictations in parts while the user talks, when on.
+    tidy: Option<Arc<Tidy>>,
 }
 
 pub struct FinishedRecording {
@@ -1216,6 +1306,14 @@ pub struct FinishedRecording {
     pub pcm: PathBuf,
     jobs: Vec<JoinHandle<Result<String, ProviderError>>>,
     live: Option<Arc<LiveShared>>,
+    tidy: Option<Arc<Tidy>>,
+}
+
+impl FinishedRecording {
+    /// What was tidied while the user talked (None when tidying wasn't on).
+    pub fn tidy_stats(&self) -> Option<TidyStats> {
+        self.tidy.as_ref().map(|t| t.stats())
+    }
 }
 
 impl Session {
@@ -1268,8 +1366,14 @@ impl Session {
             self.prev_text.clone(),
             Some(self.ctx.app.name.clone()).filter(|n| !n.is_empty()),
             self.live.as_ref().map(|l| l.shared()),
+            self.tidy.clone(),
         );
         self.jobs.push(job);
+    }
+
+    /// What has been tidied so far while the user talks (None when tidying isn't on).
+    pub fn tidy_stats(&self) -> Option<TidyStats> {
+        self.tidy.as_ref().map(|t| t.stats())
     }
 
     pub fn elapsed_ms(&self) -> u64 {
@@ -1295,11 +1399,20 @@ impl Session {
             RecordingKind::Dictation => "dictation",
             RecordingKind::Command => "command",
         };
+        if kind == RecordingKind::Command {
+            if let Some(t) = &self.tidy {
+                t.disable("the recording became a voice command");
+            }
+        }
         let _ = self.engine.db.set_kind(&self.id, k);
     }
 
     /// Stops recording: closes the last segment and returns everything needed to process.
     pub fn finish(mut self) -> FinishedRecording {
+        // Nothing new is tidied in the background from now on; the rest is cleaned at stop.
+        if let Some(t) = &self.tidy {
+            t.user_stopped();
+        }
         // Flush a partial frame into the segmenter as silence-padded audio.
         if !self.frame_buf.is_empty() {
             let mut frame = std::mem::take(&mut self.frame_buf);
@@ -1335,6 +1448,7 @@ impl Session {
             pcm: self.pcm.clone(),
             jobs: std::mem::take(&mut self.jobs),
             live,
+            tidy: self.tidy.take(),
         }
     }
 
@@ -1342,6 +1456,10 @@ impl Session {
     pub fn cancel(mut self) {
         if let Some(l) = self.live.take() {
             l.cancel();
+        }
+        // Background tidying stops and its results are dropped (the audio is what's kept).
+        if let Some(t) = self.tidy.take() {
+            t.cancel();
         }
         for j in &self.jobs {
             j.abort();

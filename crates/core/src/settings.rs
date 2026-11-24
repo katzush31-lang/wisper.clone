@@ -97,6 +97,10 @@ pub struct ProviderSettings {
     /// The recording is still saved; anything the live connection misses is transcribed the
     /// normal way.
     pub live_transcription: bool,
+    /// Tidy up long dictations in pieces while the user is still talking, so at the end only
+    /// the last part needs cleaning (see `pipeline/tidy.rs`). Falls back to cleaning the whole
+    /// text whenever the pieces might not join up exactly as a whole-text cleanup would.
+    pub clean_while_talking: bool,
 }
 
 /// Short dictations are cleaned up by a quicker model so text appears sooner.
@@ -134,6 +138,7 @@ impl Default for ProviderSettings {
             openai_cleanup_model: crate::providers::models::DEFAULT_OPENAI_CLEANUP.into(),
             fast_cleanup: FastCleanup::default(),
             live_transcription: true,
+            clean_while_talking: true,
         }
     }
 }
@@ -483,6 +488,21 @@ mod tests {
         assert!(Settings::load(&p).providers.live_transcription);
         std::fs::write(&p, r#"{"providers":{"liveTranscription":false}}"#).unwrap();
         assert!(!Settings::load(&p).providers.live_transcription);
+    }
+
+    #[test]
+    fn clean_while_talking_is_on_by_default_and_for_older_files() {
+        assert!(Settings::default().providers.clean_while_talking);
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        std::fs::write(&p, r#"{"providers":{"liveTranscription":false}}"#).unwrap();
+        assert!(Settings::load(&p).providers.clean_while_talking);
+        std::fs::write(&p, r#"{"providers":{"cleanWhileTalking":false}}"#).unwrap();
+        assert!(!Settings::load(&p).providers.clean_while_talking);
+        // Synced with the rest of the providers section.
+        let v = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(v["providers"]["cleanWhileTalking"], true);
+        assert!(SYNCED_SECTIONS.contains(&"providers"));
     }
 
     #[test]

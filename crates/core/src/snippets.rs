@@ -64,6 +64,31 @@ pub fn insert_placeholders(text: &str, snippets: &[Snippet]) -> (String, Vec<(St
     (s, map)
 }
 
+/// Shifts the placeholders `insert_placeholders` made (⟦1⟧…⟦n⟧) up by `offset`, so parts of
+/// one dictation handled separately get distinct placeholders and can be joined and restored
+/// together. Only the tokens in `map` are touched.
+pub fn renumber_placeholders(text: &str, map: Vec<(String, String, i64)>, offset: usize) -> (String, Vec<(String, String, i64)>) {
+    if offset == 0 || map.is_empty() {
+        return (text.to_string(), map);
+    }
+    let n = map.len();
+    let re = regex::Regex::new("\u{27E6}([0-9]+)\u{27E7}").expect("placeholder pattern");
+    let out = re
+        .replace_all(text, |c: &regex::Captures| match c[1].parse::<usize>() {
+            Ok(k) if (1..=n).contains(&k) => placeholder(k + offset),
+            _ => c[0].to_string(),
+        })
+        .into_owned();
+    let map = map
+        .into_iter()
+        .map(|(ph, exp, id)| {
+            let k: usize = ph.trim_start_matches('\u{27E6}').trim_end_matches('\u{27E7}').parse().unwrap_or(0);
+            (placeholder(k + offset), exp, id)
+        })
+        .collect();
+    (out, map)
+}
+
 /// Puts the saved text back. Any placeholder the model dropped is appended at the end so
 /// nothing is lost. Returns the text and whether every placeholder was found in place.
 pub fn restore_placeholders(text: &str, map: &[(String, String, i64)]) -> (String, bool) {
@@ -126,6 +151,21 @@ mod tests {
         let (out, ok) = restore_placeholders("Reach me any time.", &map);
         assert!(!ok);
         assert_eq!(out, "Reach me any time. me@example.com");
+    }
+
+    #[test]
+    fn renumbering_shifts_only_own_placeholders() {
+        let (t, map) = insert_placeholders("my address then my email address and my address", &snips());
+        assert_eq!(map.len(), 3);
+        // Unrelated tokens with higher numbers are left alone; no chained replacement.
+        let text = format!("{t} \u{27E6}9\u{27E7}");
+        let (t2, map2) = renumber_placeholders(&text, map.clone(), 2);
+        assert_eq!(t2, "\u{27E6}4\u{27E7} then \u{27E6}3\u{27E7} and \u{27E6}5\u{27E7} \u{27E6}9\u{27E7}");
+        assert_eq!(map2.iter().map(|m| m.0.clone()).collect::<Vec<_>>(), [placeholder(3), placeholder(4), placeholder(5)]);
+        let (a, _) = restore_placeholders(&t, &map);
+        let (b, _) = restore_placeholders(&t2.replace(" \u{27E6}9\u{27E7}", ""), &map2);
+        assert_eq!(a, b);
+        assert_eq!(renumber_placeholders(&t, map.clone(), 0), (t.clone(), map));
     }
 
     #[test]

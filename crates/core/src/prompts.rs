@@ -98,6 +98,20 @@ pub struct CleanupContext {
     pub previous_part: Option<String>,
     /// (index from 1, total) when cleaned in parts.
     pub part: Option<(usize, usize)>,
+    /// "Tidy up while you talk": this is one of the parts cleaned while the speaker was
+    /// still talking (or the last part, cleaned when they stopped).
+    pub talking_part: Option<TalkingPart>,
+    /// The dictation so far, just before this part (the earlier parts, already tidied).
+    pub before_part: Option<String>,
+}
+
+/// Where a part cleaned while the speaker talks sits in the dictation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TalkingPart {
+    /// From 1.
+    pub index: usize,
+    /// The final part (cleaned after the speaker stopped).
+    pub last: bool,
 }
 
 fn clip_end(s: &str, max_chars: usize) -> String {
@@ -146,6 +160,30 @@ pub fn cleanup_user_message(transcript: &str, ctx: &CleanupContext) -> String {
     }
     if let Some(p) = &ctx.previous_part {
         c.push(format!("End of the previous part (already cleaned, don't repeat it): \"{}\"", clip_end(p, 400)));
+    }
+    if let Some(tp) = ctx.talking_part {
+        let mut line = if tp.index == 1 {
+            String::from("This is the start of a long dictation that is cleaned in parts while the speaker is still talking.")
+        } else {
+            format!(
+                "This is part {} of a long dictation cleaned in parts while the speaker talks. Continue naturally from the text before it; don't add a greeting or introduction.",
+                tp.index
+            )
+        };
+        if tp.last {
+            line.push_str(" This is the final part.");
+        } else {
+            line.push_str(" More follows; don't add a closing or sign-off, and don't wrap up the thought.");
+        }
+        c.push(line);
+    }
+    if let Some(p) = &ctx.before_part {
+        if !p.trim().is_empty() {
+            c.push(format!(
+                "The dictation so far, just before this part (for continuity, names and style only; don't repeat or change it): \"{}\"",
+                clip_end(p.trim(), 600)
+            ));
+        }
     }
     let mut msg = String::new();
     if !c.is_empty() {
@@ -254,6 +292,28 @@ mod tests {
         assert!(m.contains("don't add a closing"));
         assert_eq!(m.matches("</transcript>").count(), 1);
         assert!(m.ends_with("Return only the cleaned text."));
+    }
+
+    #[test]
+    fn talking_parts_say_where_they_sit() {
+        let first = CleanupContext { talking_part: Some(TalkingPart { index: 1, last: false }), ..Default::default() };
+        let m = cleanup_user_message("some words", &first);
+        assert!(m.contains("start of a long dictation"));
+        assert!(m.contains("More follows"));
+        assert!(!m.contains("greeting"));
+        let tail = CleanupContext {
+            talking_part: Some(TalkingPart { index: 3, last: true }),
+            before_part: Some(format!("{} We met on Shabbos.", "earlier ".repeat(200))),
+            ..Default::default()
+        };
+        let m = cleanup_user_message("more words", &tail);
+        assert!(m.contains("part 3 of a long dictation"));
+        assert!(m.contains("don't add a greeting"));
+        assert!(m.contains("final part"));
+        assert!(!m.contains("More follows"));
+        // The text before is clipped to its end.
+        assert!(m.contains("We met on Shabbos.\""));
+        assert!(m.len() < 1200);
     }
 
     #[test]
